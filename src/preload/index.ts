@@ -23,7 +23,10 @@ const api: ElectronAPI = {
   credentialList: () => ipcRenderer.invoke(IPC_CHANNELS.CREDENTIAL_LIST),
   credentialDelete: (id) => ipcRenderer.invoke(IPC_CHANNELS.CREDENTIAL_DELETE, id),
   sessionConnect: (request) => ipcRenderer.invoke(IPC_CHANNELS.SESSION_CONNECT, request),
+  sessionPrecheck: (ip, protocol, port) =>
+    ipcRenderer.invoke(IPC_CHANNELS.SESSION_PRECHECK, ip, protocol, port),
   sessionList: () => ipcRenderer.invoke(IPC_CHANNELS.SESSION_LIST),
+  fileTransferOpen: (target) => ipcRenderer.invoke(IPC_CHANNELS.FILE_TRANSFER_OPEN, target),
   appGetStatus: () => ipcRenderer.invoke(IPC_CHANNELS.APP_GET_STATUS),
   settingsGet: () => ipcRenderer.invoke(IPC_CHANNELS.SETTINGS_GET),
   settingsSet: (patch) => ipcRenderer.invoke(IPC_CHANNELS.SETTINGS_SET, patch)

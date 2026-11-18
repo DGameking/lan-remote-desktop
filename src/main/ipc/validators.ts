@@ -102,7 +102,9 @@ export function validateConnectRequest(value: unknown) {
     password: typeof value.password === 'string' ? value.password : undefined,
     rustdeskId: typeof value.rustdeskId === 'string' ? value.rustdeskId : undefined,
     screenMode: (value.screenMode === 'fullscreen' ? 'fullscreen' : 'window') as 'fullscreen' | 'window',
-    useCmdkey: value.useCmdkey === true
+    useCmdkey: value.useCmdkey === true,
+    clipboardSharing: typeof value.clipboardSharing === 'boolean' ? value.clipboardSharing : undefined,
+    driveRedirection: typeof value.driveRedirection === 'boolean' ? value.driveRedirection : undefined
   }
   if (typeof value.port === 'number' && Number.isInteger(value.port) && value.port > 0 && value.port <= 65535) {
     request.port = value.port
@@ -134,7 +136,30 @@ export function validateSettingsPatch(value: unknown): Partial<AppSettings> {
   if (typeof value.useCmdkey === 'boolean') patch.useCmdkey = value.useCmdkey
   if (typeof value.complianceAccepted === 'boolean') patch.complianceAccepted = value.complianceAccepted
   if (typeof value.telemetryConsent === 'boolean') patch.telemetryConsent = value.telemetryConsent
+  if (typeof value.clipboardSharing === 'boolean') patch.clipboardSharing = value.clipboardSharing
+  if (typeof value.driveRedirection === 'boolean') patch.driveRedirection = value.driveRedirection
+  if (typeof value.defaultShareName === 'string') {
+    // 只允许安全的共享名字符，杜绝反斜杠/斜杠造成的路径逃逸
+    const share = value.defaultShareName.trim()
+    if (share && !/^[A-Za-z0-9_.\- $\u4e00-\u9fa5]+$/.test(share)) {
+      throw new Error('共享名包含非法字符（仅允许字母、数字、空格、点、下划线、连字符及中文）')
+    }
+    patch.defaultShareName = share
+  }
   return patch
+}
+
+/** 校验文件传输目标：合法 IPv4 + 安全共享名 */
+export function validateFileTransferTarget(value: unknown): { ip: string; share: string; hint: OsHint } {
+  if (!isRecord(value)) throw new Error('文件传输参数格式错误')
+  if (!isValidIp(value.ip)) throw new Error('目标 IP 格式不合法')
+  const hint = OS_HINTS.includes(value.hint as OsHint) ? (value.hint as OsHint) : 'unknown'
+  const share = typeof value.share === 'string' ? value.share.trim() : ''
+  if (share && !/^[A-Za-z0-9_.\- $\u4e00-\u9fa5]+$/.test(share)) {
+    throw new Error('共享名包含非法字符（仅允许字母、数字、空格、点、下划线、连字符及中文）')
+  }
+  if (share.includes('..')) throw new Error('共享名不合法')
+  return { ip: value.ip, share, hint }
 }
 
 export function validateId(value: unknown): string {

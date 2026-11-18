@@ -11,10 +11,14 @@ const settings = ref<AppSettings>({
   rustdeskPath: '',
   useCmdkey: false,
   complianceAccepted: true,
-  telemetryConsent: false
+  telemetryConsent: false,
+  clipboardSharing: true,
+  driveRedirection: false,
+  defaultShareName: ''
 })
 const vncPath = ref('')
 const rustdeskPath = ref('')
+const defaultShareName = ref('')
 const manualIp = ref('')
 const manualName = ref('')
 const credentials = ref<CredentialView[]>([])
@@ -41,6 +45,7 @@ async function load(): Promise<void> {
     settings.value = loadedSettings
     vncPath.value = loadedSettings.vncViewerPath
     rustdeskPath.value = loadedSettings.rustdeskPath
+    defaultShareName.value = loadedSettings.defaultShareName ?? ''
     credentials.value = loadedCredentials
     devices.value = loadedDevices
   } catch (error) {
@@ -60,7 +65,10 @@ async function saveSettings(): Promise<void> {
         vncViewerPath: vncPath.value,
         rustdeskPath: rustdeskPath.value,
         useCmdkey: settings.value.useCmdkey,
-        telemetryConsent: settings.value.telemetryConsent
+        telemetryConsent: settings.value.telemetryConsent,
+        clipboardSharing: settings.value.clipboardSharing,
+        driveRedirection: settings.value.driveRedirection,
+        defaultShareName: defaultShareName.value
       })
     )
     settings.value = updated
@@ -160,6 +168,24 @@ async function resetCompliance(): Promise<void> {
     </section>
 
     <section class="ld-panel">
+      <h2>共享能力（默认值）</h2>
+      <p class="ld-muted section-hint">这些是新建连接的默认开关，也可在连接对话框内临时调整。</p>
+      <div class="switch-row">
+        <el-switch v-model="settings.clipboardSharing" />
+        <span>会话内共享剪贴板（RDP / 客户端原生能力）</span>
+      </div>
+      <div class="switch-row">
+        <el-switch v-model="settings.driveRedirection" />
+        <span>RDP 磁盘重定向（把本机磁盘映射进远程会话以传文件，建议仅对可信设备开启）</span>
+      </div>
+      <div class="field">
+        <label>常用 SMB 共享名（可选）</label>
+        <el-input v-model="defaultShareName" placeholder="例如 shared，点“传文件”时自动填入" clearable />
+      </div>
+      <el-button type="primary" :loading="saving" @click="saveSettings">保存设置</el-button>
+    </section>
+
+    <section class="ld-panel">
       <h2>手动添加设备</h2>
       <p class="ld-muted section-hint">多网卡 / AP 隔离导致扫描失败时，可直接输入 IP 添加。</p>
       <div class="field">
@@ -206,9 +232,10 @@ async function resetCompliance(): Promise<void> {
       <h2>合规与隐私</h2>
       <ul class="privacy-list ld-muted">
         <li>仅连接自己拥有或已获明确授权的设备，禁止用于未授权访问。</li>
-        <li>扫描只在本机进行，不上传任何设备信息；遥测默认关闭。</li>
-        <li>不存储被控画面、键盘记录；日志仅保留最近 30 天。</li>
-        <li>VNC 为明文协议，请仅在可信局域网使用。</li>
+        <li>扫描只在本机进行，不上传任何设备信息；当前版本零遥测。</li>
+        <li>不存储被控画面、键盘记录、剪贴板内容或传输的文件；日志仅保留最近 30 天。</li>
+        <li>剪贴板与文件传输均由系统/客户端原生能力提供，LanDesk 不读取、不缓存其内容。</li>
+        <li>共享剪贴板与磁盘重定向请仅在可信设备间开启；VNC 为明文协议，请仅在可信局域网使用。</li>
       </ul>
       <el-button plain @click="resetCompliance">重新显示首次合规声明</el-button>
     </section>

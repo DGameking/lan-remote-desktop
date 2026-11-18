@@ -1,9 +1,29 @@
 import { randomUUID } from 'node:crypto'
 import type { ConnectRequest, ConnectResult, SessionRecord, SessionStatus } from '../../shared/types'
+import { CAPABILITY_MATRIX } from '../../shared/types'
 import { logger } from '../logger'
 import { getAdapter } from '../protocols/registry'
 import { decryptPassword } from '../store/crypto'
-import { getStore, now, rowToDevice } from '../store'
+import { getSettings, getStore, now, rowToDevice } from '../store'
+
+/** 根据协议与本次会话开关，生成能力回显文案 */
+function describeCapabilities(request: ConnectRequest): string[] {
+  const matrix = CAPABILITY_MATRIX[request.protocol]
+  const settings = getSettings()
+  const notes: string[] = []
+  if (matrix.clipboard.supported) {
+    const on = request.clipboardSharing ?? settings.clipboardSharing
+    notes.push(`剪贴板共享：${on ? '已开启' : '已关闭'}`)
+  }
+  if (matrix.fileTransfer.supported && request.protocol === 'rdp') {
+    const on = request.driveRedirection ?? settings.driveRedirection
+    notes.push(`会话内文件传输（磁盘重定向）：${on ? '已开启' : '已关闭'}`)
+  }
+  if (matrix.fileTransfer.source === 'client') {
+    notes.push('文件传输：在外部客户端窗口内使用')
+  }
+  return notes
+}
 
 /** 会话状态机 + 连接历史。外部客户端一旦调起即视为 connected，本应用不接管远端会话生命周期。 */
 export class SessionManager {
@@ -60,7 +80,7 @@ export class SessionManager {
       getStore().updateSession(record)
       this.state = 'connected'
       this.current = record
-      return { ok: true, message, sessionId, launched: true }
+      return { ok: true, message, sessionId, launched: true, capabilities: describeCapabilities(resolved) }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       record.status = 'failed'
@@ -70,7 +90,7 @@ export class SessionManager {
       this.state = 'failed'
       this.current = record
       logger.error('连接失败', { sessionId, message })
-      return { ok: false, message, sessionId, launched: false }
+      return { ok: false, message, sessionId, launched: false, capabilities: [] }
     }
   }
 }

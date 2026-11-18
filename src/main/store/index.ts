@@ -30,7 +30,9 @@ export function getStore(): Store {
 const BOOLEAN_KEYS = new Set<keyof AppSettings>([
   'useCmdkey',
   'complianceAccepted',
-  'telemetryConsent'
+  'telemetryConsent',
+  'clipboardSharing',
+  'driveRedirection'
 ])
 
 export function getSettings(): AppSettings {

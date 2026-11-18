@@ -2,10 +2,11 @@
 import { onMounted, onUnmounted, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { api, unwrap } from './api'
-import type { AppStatus, Device, ScanProgress } from '../../shared/types'
+import type { AppSettings, AppStatus, Device, ScanProgress } from '../../shared/types'
 import ScanPanel from './components/ScanPanel.vue'
 import DeviceList from './components/DeviceList.vue'
 import ConnectDialog from './components/ConnectDialog.vue'
+import FileTransferDialog from './components/FileTransferDialog.vue'
 import Settings from './components/Settings.vue'
 import History from './components/History.vue'
 
@@ -21,6 +22,8 @@ const progress = ref<ScanProgress>({
   devices: []
 })
 const selectedDevice = ref<Device | null>(null)
+const transferDevice = ref<Device | null>(null)
+const settings = ref<AppSettings | null>(null)
 const complianceVisible = ref(false)
 const complianceChecked = ref(false)
 
@@ -43,7 +46,15 @@ async function refreshStatus(): Promise<void> {
 }
 
 async function refreshAll(): Promise<void> {
-  await Promise.all([refreshDevices(), refreshStatus()])
+  await Promise.all([refreshDevices(), refreshStatus(), refreshSettings()])
+}
+
+async function refreshSettings(): Promise<void> {
+  try {
+    settings.value = await unwrap(api.settingsGet())
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : String(error))
+  }
 }
 
 async function startScan(): Promise<void> {
@@ -145,6 +156,7 @@ onUnmounted(() => {
               :devices="devices"
               :loading="scanning"
               @connect="selectedDevice = $event"
+              @file-transfer="transferDevice = $event"
               @refresh="refreshDevices"
             />
           </div>
@@ -169,6 +181,12 @@ onUnmounted(() => {
       @connected="refreshAll"
     />
 
+    <FileTransferDialog
+      :device="transferDevice"
+      :settings="settings"
+      @close="transferDevice = null"
+    />
+
     <el-dialog
       v-model="complianceVisible"
       title="使用前的合规声明"
@@ -189,6 +207,7 @@ onUnmounted(() => {
           <li>扫描仅在本机局域网内进行，不上传设备信息，不需要公网或账号。</li>
           <li>VNC 采用明文传输，请仅在可信局域网使用；RDP 密码不写入 .rdp 文件。</li>
           <li>凭据使用 Windows DPAPI 加密后保存在本机，不存储明文密码。</li>
+          <li>剪贴板共享与文件传输仅在会话内由系统原生能力提供，LanDesk 不读取其内容；请仅在可信设备间开启。</li>
         </ul>
         <el-checkbox v-model="complianceChecked">
           我已阅读并同意：仅连接自己拥有或已获明确授权的设备

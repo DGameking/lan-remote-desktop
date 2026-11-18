@@ -7,18 +7,23 @@ import {
   type IpcResponse
 } from '../../shared/types'
 import type { ScanManager } from '../discovery/manager'
+import { probePort } from '../discovery/precheck'
 import { detectSubnets } from '../discovery/subnet'
 import { logger } from '../logger'
-import { getAvailability } from '../protocols/registry'
+import { openFileShare } from '../protocols/fileshare'
+import { getAvailability, isProtocolId } from '../protocols/registry'
+import { PROTOCOL_PRECHECK_PORT } from '../../shared/types'
 import type { SessionManager } from '../session/manager'
 import { encryptPassword } from '../store/crypto'
 import { deviceToRow, getSettings, getStore, now, rowToDevice, saveSettings } from '../store'
 import {
   fail,
+  isValidIp,
   ok,
   validateConnectRequest,
   validateCredentialInput,
   validateDevice,
+  validateFileTransferTarget,
   validateId,
   validateSettingsPatch
 } from './validators'
@@ -143,11 +148,43 @@ export function registerIpc(
     }
   })
 
+  // 连接前 TCP 端口预检：只测可达性与延迟，不发送协议数据，帮助用户快速定位"服务未开启"。
+  ipcMain.handle(
+    IPC_CHANNELS.SESSION_PRECHECK,
+    async (_event, rawIp: unknown, rawProtocol: unknown, rawPort: unknown): Promise<IpcResponse> => {
+      try {
+        if (!isValidIp(rawIp)) throw new Error('目标 IP 格式不合法')
+        if (!isProtocolId(rawProtocol)) throw new Error('不支持的协议')
+        const fallback = PROTOCOL_PRECHECK_PORT[rawProtocol]
+        const port =
+          typeof rawPort === 'number' && rawPort > 0 && rawPort <= 65535 ? rawPort : fallback
+        if (!port) {
+          // rustdesk 走 21116/中继，单纯 TCP 探测无意义，直接返回 skipped 语义（reachable=true 仅供参考）
+          return ok({ ip: rawIp, port: 0, reachable: true, latencyMs: 0 }, '该协议跳过端口预检')
+        }
+        return ok(await probePort(rawIp, port))
+      } catch (error) {
+        return errorResponse('session:precheck', error)
+      }
+    }
+  )
+
   ipcMain.handle(IPC_CHANNELS.SESSION_LIST, async (): Promise<IpcResponse> => {
     try {
       return ok(sessionManager.listHistory())
     } catch (error) {
       return errorResponse('session:list', error)
+    }
+  })
+
+  // 文件传输通道：调起 Windows 资源管理器打开 \\IP\共享名（SMB 原生能力）
+  ipcMain.handle(IPC_CHANNELS.FILE_TRANSFER_OPEN, async (_event, payload: unknown): Promise<IpcResponse> => {
+    try {
+      const target = validateFileTransferTarget(payload)
+      const result = await openFileShare(target)
+      return ok(result, result.message)
+    } catch (error) {
+      return errorResponse('file-transfer:open', error)
     }
   })
 

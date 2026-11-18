@@ -5,6 +5,7 @@ import type { Device, OsHint, ProtocolId } from '../../../shared/types'
 const props = defineProps<{ devices: Device[]; loading?: boolean }>()
 const emit = defineEmits<{
   (e: 'connect', device: Device): void
+  (e: 'file-transfer', device: Device): void
   (e: 'refresh'): void
 }>()
 
@@ -91,9 +92,12 @@ function formatTime(value: string): string {
         </div>
         <div class="card-footer">
           <span class="ld-muted last-seen">最近发现 {{ formatTime(device.lastSeenAt) }}</span>
-          <el-button type="primary" size="small" @click="emit('connect', device)">
-            连接 · {{ protocolLabels[recommend(device)] }}
-          </el-button>
+          <div class="footer-actions">
+            <el-button size="small" plain @click="emit('file-transfer', device)">传文件</el-button>
+            <el-button type="primary" size="small" @click="emit('connect', device)">
+              {{ protocolLabels[recommend(device)] }}
+            </el-button>
+          </div>
         </div>
       </article>
     </div>
@@ -125,9 +129,10 @@ function formatTime(value: string): string {
           <span v-if="(scope.row as Device).availableProtocols.length === 0" class="ld-muted">-</span>
         </template>
       </el-table-column>
-      <el-table-column label="操作" width="110" fixed="right">
+      <el-table-column label="操作" width="150" fixed="right">
         <template #default="scope">
           <el-button link type="primary" size="small" @click="emit('connect', scope.row as Device)">连接</el-button>
+          <el-button link size="small" @click="emit('file-transfer', scope.row as Device)">传文件</el-button>
         </template>
       </el-table-column>
     </el-table>
@@ -231,6 +236,11 @@ function formatTime(value: string): string {
   gap: 8px;
   border-top: 1px dashed var(--ld-border);
   padding-top: 12px;
+}
+.footer-actions {
+  display: flex;
+  gap: 6px;
+  flex-shrink: 0;
 }
 .last-seen {
   font-size: 11px;
