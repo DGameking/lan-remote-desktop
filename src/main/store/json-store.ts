@@ -1,0 +1,125 @@
+import fs from 'node:fs'
+import path from 'node:path'
+import { logger } from '../logger'
+import type { CredentialRow, DeviceRow, SessionRow, Store } from './types'
+
+interface JsonData {
+  devices: DeviceRow[]
+  credentials: CredentialRow[]
+  sessions: SessionRow[]
+  settings: Record<string, string>
+}
+
+function emptyData(): JsonData {
+  return { devices: [], credentials: [], sessions: [], settings: {} }
+}
+
+/**
+ * SQLite/WASM 不可用时的降级实现：JSON 文件持久化到 userData/landesk-data.json。
+ * 数据结构与 SQL 表一一对应，保证主流程仍可用。
+ */
+export class JsonStore implements Store {
+  private data: JsonData
+
+  private constructor(private readonly file: string, data: JsonData) {
+    this.data = data
+  }
+
+  static create(userData: string): JsonStore {
+    const file = path.join(userData, 'landesk-data.json')
+    let data = emptyData()
+    try {
+      if (fs.existsSync(file)) {
+        const parsed: unknown = JSON.parse(fs.readFileSync(file, 'utf8'))
+        if (parsed && typeof parsed === 'object') {
+          const raw = parsed as Partial<JsonData>
+          data = {
+            devices: Array.isArray(raw.devices) ? raw.devices : [],
+            credentials: Array.isArray(raw.credentials) ? raw.credentials : [],
+            sessions: Array.isArray(raw.sessions) ? raw.sessions : [],
+            settings: raw.settings && typeof raw.settings === 'object' ? raw.settings : {}
+          }
+        }
+      }
+    } catch (error) {
+      logger.warn('降级 JSON 存储读取失败，将使用空数据', error)
+    }
+    const store = new JsonStore(file, data)
+    store.persist()
+    logger.info('JSON 降级存储初始化成功', { file })
+    return store
+  }
+
+  mode(): 'sqlite' | 'json' {
+    return 'json'
+  }
+
+  private persist(): void {
+    fs.mkdirSync(path.dirname(this.file), { recursive: true })
+    fs.writeFileSync(this.file, JSON.stringify(this.data, null, 2), 'utf8')
+  }
+
+  listDevices(): DeviceRow[] {
+    return [...this.data.devices].sort((a, b) => b.lastSeenAt.localeCompare(a.lastSeenAt))
+  }
+
+  upsertDevice(row: DeviceRow): void {
+    const index = this.data.devices.findIndex((item) => item.id === row.id)
+    if (index >= 0) this.data.devices[index] = row
+    else this.data.devices.push(row)
+    this.persist()
+  }
+
+  deleteDevice(id: string): void {
+    this.data.devices = this.data.devices.filter((item) => item.id !== id)
+    this.data.credentials = this.data.credentials.filter((item) => item.deviceId !== id)
+    this.persist()
+  }
+
+  listCredentials(): CredentialRow[] {
+    return [...this.data.credentials].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
+  }
+
+  setCredential(row: CredentialRow): void {
+    const index = this.data.credentials.findIndex(
+      (item) => item.deviceId === row.deviceId && item.protocol === row.protocol
+    )
+    if (index >= 0) this.data.credentials[index] = row
+    else this.data.credentials.push(row)
+    this.persist()
+  }
+
+  deleteCredential(id: string): void {
+    this.data.credentials = this.data.credentials.filter((item) => item.id !== id)
+    this.persist()
+  }
+
+  listSessions(): SessionRow[] {
+    return [...this.data.sessions]
+      .sort((a, b) => b.startedAt.localeCompare(a.startedAt))
+      .slice(0, 200)
+  }
+
+  addSession(row: SessionRow): void {
+    this.data.sessions.push(row)
+    if (this.data.sessions.length > 1000) {
+      this.data.sessions = this.data.sessions.slice(-1000)
+    }
+    this.persist()
+  }
+
+  updateSession(row: SessionRow): void {
+    const index = this.data.sessions.findIndex((item) => item.id === row.id)
+    if (index >= 0) this.data.sessions[index] = row
+    this.persist()
+  }
+
+  getSetting(key: string): string | undefined {
+    return this.data.settings[key]
+  }
+
+  setSetting(key: string, value: string): void {
+    this.data.settings[key] = value
+    this.persist()
+  }
+}

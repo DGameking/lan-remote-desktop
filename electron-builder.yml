@@ -1,0 +1,46 @@
+appId: com.landesk.desktop
+productName: LanDesk
+copyright: Copyright © 2026 LanDesk Team
+
+directories:
+  output: dist
+  buildResources: resources
+
+# 仅打包运行时需要的产物与生产依赖；docs/ 与源码不进包
+files:
+  - 'out/**/*'
+  - 'package.json'
+  - 'node_modules/**/*'
+  - '!**/.vscode/*'
+  - '!src/*'
+  - '!docs/*'
+  - '!*.md'
+  - '!tsconfig*.json'
+  - '!electron.vite.config.ts'
+
+asar: true
+
+win:
+  target:
+    - target: nsis
+      arch:
+        - x64
+    - target: portable
+      arch:
+        - x64
+
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: LanDesk
+  deleteAppDataOnUninstall: false
+
+portable:
+  artifactName: 'LanDesk-${version}-portable-win-x64.exe'
+
+artifactName: '${productName}-${version}-setup-${arch}.${ext}'
+
+compression: maximum

@@ -1,0 +1,14 @@
+node_modules/
+out/
+dist/
+*.log
+.DS_Store
+.vscode/
+.idea/
+*.local
+.env
+.env.*
+*.pem
+*.pfx
+*.key
+*.p12

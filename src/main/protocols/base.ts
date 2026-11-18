@@ -1,0 +1,71 @@
+import { spawn, execFile } from 'node:child_process'
+import { promisify } from 'node:util'
+import type { ConnectRequest, ProtocolAvailability, ProtocolId } from '../../shared/types'
+
+const execFileAsync = promisify(execFile)
+
+/** 协议适配器：只负责准备参数并调起本机已安装的外部客户端，不实现任何协议栈 */
+export interface ProtocolAdapter {
+  readonly id: ProtocolId
+  readonly label: string
+  isAvailable(): Promise<ProtocolAvailability>
+  connect(request: ConnectRequest): Promise<string>
+}
+
+/** 外部进程一律以参数数组调起，绝不使用 shell 字符串拼接 */
+export function spawnDetached(command: string, args: string[]): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    let settled = false
+    let child: ReturnType<typeof spawn>
+    try {
+      child = spawn(command, args, {
+        detached: true,
+        stdio: 'ignore',
+        windowsHide: true,
+        shell: false
+      })
+    } catch (error) {
+      reject(error)
+      return
+    }
+    child.once('error', (error) => {
+      if (settled) return
+      settled = true
+      reject(error)
+    })
+    child.once('spawn', () => {
+      if (settled) return
+      settled = true
+      child.unref()
+      resolve()
+    })
+  })
+}
+
+/** 同步执行短命令（如 cmdkey），不 detach，等待退出码 */
+export async function execCommand(command: string, args: string[]): Promise<void> {
+  await execFileAsync(command, args, { windowsHide: true, timeout: 5000 })
+}
+
+/** 在 PATH 中查找可执行文件（Windows 用 where，其他平台用 which） */
+export async function findOnPath(command: string): Promise<string> {
+  if (process.platform !== 'win32') return ''
+  try {
+    const { stdout } = await execFileAsync('where', [command], {
+      windowsHide: true,
+      timeout: 3000
+    })
+    return stdout.split(/\r?\n/).map((line) => line.trim()).find(Boolean) ?? ''
+  } catch {
+    return ''
+  }
+}
+
+export function availability(
+  id: ProtocolId,
+  label: string,
+  available: boolean,
+  detail: string
+): ProtocolAvailability {
+  return { id, label, available, detail }
+}
