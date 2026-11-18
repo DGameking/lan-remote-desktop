@@ -9,6 +9,18 @@ export type ProtocolId = 'rdp' | 'vnc' | 'rustdesk'
 /** 设备平台推测 */
 export type OsHint = 'windows' | 'macos' | 'linux' | 'fnos' | 'unknown'
 
+/** 服务指纹识别出的能力类型（与 ProtocolId 分离，不污染连接协议） */
+export type DetectedServiceId = 'vnc' | 'ssh' | 'rdp' | 'smb' | 'http' | 'winrm' | 'afp' | 'unknown'
+
+/** 服务指纹识别结果 */
+export interface ServiceFingerprint {
+  port: number
+  service: DetectedServiceId
+  version?: string
+  osHint?: OsHint
+  raw?: string
+}
+
 /** 设备来源 */
 export type DiscoverySource = 'subnet' | 'mdns' | 'arp' | 'manual'
 
@@ -109,7 +121,7 @@ export interface AppStatus {
 
 /** 扫描进度推送 */
 export interface ScanProgress {
-  phase: 'idle' | 'subnet' | 'ports' | 'mdns' | 'arp' | 'done' | 'stopped'
+  phase: 'idle' | 'subnet' | 'ports' | 'mdns' | 'arp' | 'banner' | 'done' | 'stopped'
   percent: number
   message: string
   subnet: string

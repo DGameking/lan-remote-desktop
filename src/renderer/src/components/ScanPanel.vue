@@ -21,13 +21,13 @@ const emit = defineEmits<{
         <span class="scan-icon">◎</span>
         <div>
           <h2>局域网设备发现</h2>
-          <p class="ld-muted">扫描本机所在网段的 3389 / 5900 / 21116 端口，并结合 mDNS 与 ARP 表补充设备信息。</p>
+          <p class="ld-muted">扫描本机所在网段的 22 / 445 / 3389 / 5900-5910 / 5666 / 5985 等端口，识别原生远程桌面能力，并结合 mDNS 与 ARP 表补充设备信息。</p>
         </div>
       </div>
       <div class="scan-meta">
         <span class="ld-tag">当前网段 {{ props.subnet || '检测中…' }}</span>
         <span class="ld-tag muted">已发现 {{ props.deviceCount }} 台</span>
-        <span class="ld-tag muted">并发 50 · 超时 400ms</span>
+        <span class="ld-tag muted">分层扫描 · 存活快扫 + 服务指纹识别</span>
       </div>
     </div>
     <div class="scan-right">

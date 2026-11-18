@@ -1,4 +1,4 @@
-import type { Device, DiscoverySource, OsHint, ProtocolId } from '../../shared/types'
+import type { Device, DiscoverySource, OsHint, ProtocolId, ServiceFingerprint } from '../../shared/types'
 import { deviceToRow, getStore, now } from '../store'
 
 export interface DeviceCandidate {
@@ -7,6 +7,7 @@ export interface DeviceCandidate {
   mac?: string
   ports?: number[]
   protocols?: ProtocolId[]
+  fingerprint?: ServiceFingerprint[]
   source: DiscoverySource
 }
 
@@ -29,8 +30,16 @@ export function deviceIdForIp(ip: string): string {
   return `dev-${ip.replace(/\./g, '-')}`
 }
 
-/** 端口 3389 判定 Windows；5900 暂标 unknown；名称关键字用于补充平台推测 */
-export function inferOsHint(ports: number[], name: string): OsHint {
+/** 端口 3389 判定 Windows；5900 暂标 unknown；名称关键字用于补充平台推测。
+ *  第 3 参为服务指纹，优先于端口/名称规则；省略时保持旧行为不变。 */
+export function inferOsHint(ports: number[], name: string, fingerprint: ServiceFingerprint[] = []): OsHint {
+  for (const fp of fingerprint) {
+    if (fp.service === 'vnc' && fp.version === '003.889') return 'macos'
+    if (fp.service === 'ssh' && fp.osHint === 'linux') return 'linux'
+    if (fp.service === 'http' && fp.osHint === 'fnos') return 'fnos'
+    if (fp.service === 'rdp' && fp.osHint === 'windows') return 'windows'
+    if (fp.osHint && fp.osHint !== 'unknown') return fp.osHint
+  }
   if (ports.includes(3389)) return 'windows'
   const lower = name.toLowerCase()
   if (/(fnos|飞牛|\bnas\b)/.test(lower)) return 'fnos'
@@ -62,12 +71,14 @@ export function aggregateAndPersist(candidates: DeviceCandidate[]): Device[] {
       byIp.set(candidate.ip, {
         ...candidate,
         ports: [...(candidate.ports ?? [])],
-        protocols: [...(candidate.protocols ?? [])]
+        protocols: [...(candidate.protocols ?? [])],
+        fingerprint: [...(candidate.fingerprint ?? [])]
       })
       continue
     }
     const ports = new Set([...(existing.ports ?? []), ...(candidate.ports ?? [])])
     const protocols = new Set([...(existing.protocols ?? []), ...(candidate.protocols ?? [])])
+    const fingerprint = [...(existing.fingerprint ?? []), ...(candidate.fingerprint ?? [])]
     const preferNew = SOURCE_PRIORITY[candidate.source] > SOURCE_PRIORITY[existing.source]
     byIp.set(candidate.ip, {
       ip: candidate.ip,
@@ -75,6 +86,7 @@ export function aggregateAndPersist(candidates: DeviceCandidate[]): Device[] {
       mac: existing.mac || candidate.mac || '',
       ports: [...ports],
       protocols: [...protocols],
+      fingerprint,
       source: preferNew ? candidate.source : existing.source
     })
   }
@@ -105,7 +117,7 @@ export function aggregateAndPersist(candidates: DeviceCandidate[]): Device[] {
       name: candidate.name || old?.name || candidate.ip,
       ip: candidate.ip,
       mac: candidate.mac || old?.mac || '',
-      osHint: inferOsHint(hintPorts, candidate.name || old?.name || ''),
+      osHint: inferOsHint(hintPorts, candidate.name || old?.name || '', candidate.fingerprint ?? []),
       source: candidate.source,
       availableProtocols,
       online: true,
