@@ -6,6 +6,7 @@ import type { AppSettings, AppStatus, Device, ScanProgress } from '../../shared/
 import ScanPanel from './components/ScanPanel.vue'
 import DeviceList from './components/DeviceList.vue'
 import ConnectDialog from './components/ConnectDialog.vue'
+import QuickConnect from './components/QuickConnect.vue'
 import FileTransferDialog from './components/FileTransferDialog.vue'
 import Settings from './components/Settings.vue'
 import History from './components/History.vue'
@@ -22,6 +23,7 @@ const progress = ref<ScanProgress>({
   devices: []
 })
 const selectedDevice = ref<Device | null>(null)
+const quickConnectVisible = ref(false)
 const transferDevice = ref<Device | null>(null)
 const settings = ref<AppSettings | null>(null)
 const complianceVisible = ref(false)
@@ -144,6 +146,12 @@ onUnmounted(() => {
       <el-tabs v-model="activeTab" class="ld-tabs">
         <el-tab-pane label="设备发现" name="devices">
           <div class="tab-content">
+            <div class="quick-connect-bar">
+              <el-button type="primary" plain @click="quickConnectVisible = true">
+                快速连接（输入 IP:端口）
+              </el-button>
+              <span class="ld-muted quick-connect-hint">扫描不到设备？直接输入目标 IP 与端口即可发起连接。</span>
+            </div>
             <ScanPanel
               :scanning="scanning"
               :progress="progress"
@@ -173,6 +181,12 @@ onUnmounted(() => {
     <footer class="app-footer ld-muted">
       LanDesk 仅调起本机已安装的外部客户端，不捆绑 GPL/AGPL 程序；请仅连接已授权设备。
     </footer>
+
+    <QuickConnect
+      v-model:visible="quickConnectVisible"
+      :protocols="appStatus?.protocols || []"
+      @connected="refreshAll"
+    />
 
     <ConnectDialog
       :device="selectedDevice"
@@ -303,6 +317,19 @@ onUnmounted(() => {
   flex-direction: column;
   gap: 16px;
   padding-bottom: 12px;
+}
+.quick-connect-bar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  background: #f7faff;
+  border: 1px solid var(--ld-border);
+  border-radius: 10px;
+  padding: 10px 14px;
+}
+.quick-connect-hint {
+  font-size: 12px;
 }
 .app-footer {
   padding: 8px 28px 14px;
