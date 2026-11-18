@@ -68,6 +68,10 @@ export class SessionManager {
         if (saved?.encryptedPassword) {
           try {
             resolved.password = decryptPassword(saved.encryptedPassword)
+            // 用户下次不填账号也能直连：把保存的账号一并回填，供 rdp 写入 username:s:
+            if (!resolved.username && saved.username) {
+              resolved.username = saved.username
+            }
           } catch (error) {
             logger.warn('已保存凭据解密失败，将改为提示用户手输', error)
           }
