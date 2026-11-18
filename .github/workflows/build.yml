@@ -36,7 +36,9 @@ jobs:
         run: npm run test:unit
 
       - name: 打包 NSIS / portable（含三进程构建）
-        run: npm run dist -- --x64
+        # --publish never：禁用 electron-builder 内置发布（其需 GH_TOKEN），
+        # 统一由下方 softprops/action-gh-release 上传资产，避免双重发布冲突。
+        run: npm run dist -- --x64 --publish never
 
       - name: 生成 SHA256 校验文件
         shell: pwsh
