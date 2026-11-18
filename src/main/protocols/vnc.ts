@@ -40,14 +40,16 @@ export class VncAdapter implements ProtocolAdapter {
       !!executable,
       executable
         ? `已找到 VNC Viewer：${executable}`
-        : '未找到 VNC Viewer，请在“设置”中指定 vncviewer.exe / tvnviewer.exe 路径'
+        : '未找到 VNC Viewer，请在“设置 → VNC Viewer 路径”中指定，或安装 TigerVNC/RealVNC'
     )
   }
 
   async connect(request: ConnectRequest): Promise<string> {
     const executable = await this.resolveViewer(getSettings().vncViewerPath)
     if (!executable) {
-      throw new Error('未找到本机 VNC Viewer。请在“设置 → VNC Viewer 路径”中指定可执行文件后重试。')
+      throw new Error(
+        '未找到本机 VNC Viewer，请在设置→VNC Viewer 路径中指定，或安装 TigerVNC/RealVNC 后重试。'
+      )
     }
     const port = request.port && request.port > 0 ? request.port : DEFAULT_VNC_PORT
     // VNC Viewer 标准语法是单个参数 host::port。

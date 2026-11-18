@@ -27,6 +27,7 @@ const SCHEMA: string[] = [
     osHint TEXT NOT NULL DEFAULT 'unknown',
     source TEXT NOT NULL DEFAULT 'subnet',
     availableProtocols TEXT NOT NULL DEFAULT '[]',
+    detectedPorts TEXT NOT NULL DEFAULT '[]',
     online INTEGER NOT NULL DEFAULT 0,
     lastSeenAt TEXT NOT NULL,
     createdAt TEXT NOT NULL,
@@ -76,6 +77,14 @@ export class SqlStore implements Store {
     }
     const store = new SqlStore(database, file)
     for (const statement of SCHEMA) database.run(statement)
+    // 老库升级：CREATE TABLE IF NOT EXISTS 不会为已存在的表补列，这里显式补齐 detectedPorts。
+    // 已含该列时 ALTER 会抛 duplicate column，按预期忽略，保证已有用户数据零丢失。
+    try {
+      database.run(`ALTER TABLE devices ADD COLUMN detectedPorts TEXT NOT NULL DEFAULT '[]'`)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      if (!/duplicate column/i.test(message)) throw error
+    }
     store.persist()
     logger.info('SQLite 存储初始化成功', { file })
     return store
@@ -109,11 +118,11 @@ export class SqlStore implements Store {
   upsertDevice(row: DeviceRow): void {
     this.db.run(
       `INSERT OR REPLACE INTO devices
-       (id, name, ip, mac, osHint, source, availableProtocols, online, lastSeenAt, createdAt, updatedAt)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       (id, name, ip, mac, osHint, source, availableProtocols, detectedPorts, online, lastSeenAt, createdAt, updatedAt)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         row.id, row.name, row.ip, row.mac, row.osHint, row.source,
-        row.availableProtocols, row.online, row.lastSeenAt, row.createdAt, row.updatedAt
+        row.availableProtocols, row.detectedPorts, row.online, row.lastSeenAt, row.createdAt, row.updatedAt
       ]
     )
     this.persist()

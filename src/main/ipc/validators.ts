@@ -69,6 +69,17 @@ export function validateDevice(value: unknown): Device {
   const protocols = Array.isArray(value.availableProtocols)
     ? value.availableProtocols.filter(isProtocolId)
     : []
+  // 仅保留 1-65535 的整数端口并去重，避免脏数据进入存储层。
+  const detectedPorts = Array.isArray(value.detectedPorts)
+    ? [
+        ...new Set(
+          value.detectedPorts.filter(
+            (p): p is number =>
+              typeof p === 'number' && Number.isInteger(p) && p >= 1 && p <= 65535
+          )
+        )
+      ]
+    : []
   const osHint = OS_HINTS.includes(value.osHint as OsHint) ? (value.osHint as OsHint) : 'unknown'
   const source = SOURCES.includes(value.source as DiscoverySource)
     ? (value.source as DiscoverySource)
@@ -82,6 +93,7 @@ export function validateDevice(value: unknown): Device {
     osHint,
     source,
     availableProtocols: protocols,
+    detectedPorts,
     online: value.online !== false,
     lastSeenAt: asString(value.lastSeenAt, timestamp),
     createdAt: asString(value.createdAt, timestamp),

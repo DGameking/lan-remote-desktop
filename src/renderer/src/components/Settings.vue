@@ -97,6 +97,7 @@ async function addManualDevice(): Promise<void> {
     osHint: 'unknown',
     source: 'manual',
     availableProtocols: [],
+    detectedPorts: [],
     online: true,
     lastSeenAt: timestamp,
     createdAt: timestamp,

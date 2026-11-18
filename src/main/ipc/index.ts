@@ -34,6 +34,14 @@ function errorResponse(context: string, error: unknown): IpcResponse<never> {
   return fail(message)
 }
 
+/** 端口不可达时按端口给出可执行的排查提示，避免用户只看到"连不上"。 */
+function precheckFailureHint(port: number): string {
+  if (port === 3389) return '被控端可能未开启远程桌面/非专业版/防火墙拦截，请检查后再试。'
+  if (port >= 5900 && port <= 5910) return '被控端可能未开启屏幕共享/VNC，请检查后再试。'
+  if (port === 22) return '被控端 SSH 服务未开启，请检查后再试。'
+  return '端口未响应，请确认被控端已开启对应服务或检查防火墙。'
+}
+
 /** 注册全部 IPC handler。所有 renderer 入参都经过 validators 校验。 */
 export function registerIpc(
   getWindow: () => BrowserWindow | null,
@@ -162,7 +170,8 @@ export function registerIpc(
           // rustdesk 走 21116/中继，单纯 TCP 探测无意义，直接返回 skipped 语义（reachable=true 仅供参考）
           return ok({ ip: rawIp, port: 0, reachable: true, latencyMs: 0 }, '该协议跳过端口预检')
         }
-        return ok(await probePort(rawIp, port))
+        const result = await probePort(rawIp, port)
+        return result.reachable ? ok(result) : ok(result, precheckFailureHint(port))
       } catch (error) {
         return errorResponse('session:precheck', error)
       }

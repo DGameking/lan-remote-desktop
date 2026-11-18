@@ -6,6 +6,8 @@ export interface DeviceCandidate {
   name?: string
   mac?: string
   ports?: number[]
+  /** 该 IP 上已做过服务识别的开放端口；缺省时由 fingerprint 中的 port 推导 */
+  detectedPorts?: number[]
   protocols?: ProtocolId[]
   fingerprint?: ServiceFingerprint[]
   source: DiscoverySource
@@ -71,12 +73,17 @@ export function aggregateAndPersist(candidates: DeviceCandidate[]): Device[] {
       byIp.set(candidate.ip, {
         ...candidate,
         ports: [...(candidate.ports ?? [])],
+        detectedPorts: [...(candidate.detectedPorts ?? [])],
         protocols: [...(candidate.protocols ?? [])],
         fingerprint: [...(candidate.fingerprint ?? [])]
       })
       continue
     }
     const ports = new Set([...(existing.ports ?? []), ...(candidate.ports ?? [])])
+    const detectedPorts = new Set([
+      ...(existing.detectedPorts ?? []),
+      ...(candidate.detectedPorts ?? [])
+    ])
     const protocols = new Set([...(existing.protocols ?? []), ...(candidate.protocols ?? [])])
     const fingerprint = [...(existing.fingerprint ?? []), ...(candidate.fingerprint ?? [])]
     const preferNew = SOURCE_PRIORITY[candidate.source] > SOURCE_PRIORITY[existing.source]
@@ -85,6 +92,7 @@ export function aggregateAndPersist(candidates: DeviceCandidate[]): Device[] {
       name: existing.name || candidate.name || '',
       mac: existing.mac || candidate.mac || '',
       ports: [...ports],
+      detectedPorts: [...detectedPorts],
       protocols: [...protocols],
       fingerprint,
       source: preferNew ? candidate.source : existing.source
@@ -109,6 +117,12 @@ export function aggregateAndPersist(candidates: DeviceCandidate[]): Device[] {
         )
     const hintPorts = syntheticPorts.filter((port) => port === 3389 || port === 5900)
 
+    // 服务识别成功的端口即"已发现端口"：并集候选显式值与指纹命中端口。
+    const detectedPorts = new Set<number>(candidate.detectedPorts ?? [])
+    for (const fp of candidate.fingerprint ?? []) {
+      if (fp.port >= 1 && fp.port <= 65535) detectedPorts.add(fp.port)
+    }
+
     const id = deviceIdForIp(candidate.ip)
     const old = existingRows.get(id)
     const timestamp = now()
@@ -120,6 +134,7 @@ export function aggregateAndPersist(candidates: DeviceCandidate[]): Device[] {
       osHint: inferOsHint(hintPorts, candidate.name || old?.name || '', candidate.fingerprint ?? []),
       source: candidate.source,
       availableProtocols,
+      detectedPorts: [...detectedPorts],
       online: true,
       lastSeenAt: timestamp,
       createdAt: old?.createdAt ?? timestamp,
@@ -145,6 +160,7 @@ export function upsertManualDevice(ip: string, name?: string): Device {
     osHint: 'unknown',
     source: 'manual',
     availableProtocols: [],
+    detectedPorts: [],
     online: true,
     lastSeenAt: timestamp,
     createdAt: old?.createdAt ?? timestamp,

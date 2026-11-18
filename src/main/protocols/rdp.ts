@@ -100,7 +100,9 @@ export class RdpAdapter implements ProtocolAdapter {
       throw new Error('RDP 主控仅支持 Windows 系统')
     }
     if (!fs.existsSync(mstscPath())) {
-      throw new Error('未找到 mstsc.exe，无法发起 RDP 连接')
+      throw new Error(
+        '未找到系统自带的 mstsc.exe，无法发起 RDP 连接。请确认本机与被控端为 Windows 专业版/企业版，并确认被控端为 Windows 专业版/企业版且已启用远程桌面。'
+      )
     }
 
     const settings = getSettings()
@@ -176,7 +178,9 @@ export class RdpAdapter implements ProtocolAdapter {
       } catch {
         // 忽略清理失败
       }
-      throw new Error(`调起 mstsc 失败：${error instanceof Error ? error.message : String(error)}`)
+      throw new Error(
+        `调起 mstsc 失败：${error instanceof Error ? error.message : String(error)}。若目标无法连接，请确认被控端为 Windows 专业版/企业版且已启用远程桌面。`
+      )
     }
   }
 }

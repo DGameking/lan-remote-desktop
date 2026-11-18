@@ -34,7 +34,14 @@ export class JsonStore implements Store {
         if (parsed && typeof parsed === 'object') {
           const raw = parsed as Partial<JsonData>
           data = {
-            devices: Array.isArray(raw.devices) ? raw.devices : [],
+            // 老库升级：历史设备行没有 detectedPorts 列，补默认空数组，避免 undefined 落库。
+            devices: Array.isArray(raw.devices)
+              ? raw.devices.map((row) => ({
+                  ...row,
+                  detectedPorts:
+                    typeof row.detectedPorts === 'string' ? row.detectedPorts : '[]'
+                }))
+              : [],
             credentials: Array.isArray(raw.credentials) ? raw.credentials : [],
             sessions: Array.isArray(raw.sessions) ? raw.sessions : [],
             settings: raw.settings && typeof raw.settings === 'object' ? raw.settings : {}

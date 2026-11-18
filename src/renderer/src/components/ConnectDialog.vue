@@ -34,6 +34,9 @@ const agreed = ref(false)
 const connecting = ref(false)
 const prechecking = ref(false)
 const precheck = ref<PrecheckResult | null>(null)
+const precheckMessage = ref('')
+const lastFailed = ref(false)
+const activeTroubleshoot = ref<string[]>([])
 
 const protocolLabels: Record<ProtocolId, string> = {
   rdp: 'RDP（Windows）',
@@ -42,6 +45,62 @@ const protocolLabels: Record<ProtocolId, string> = {
 }
 
 const caps = computed(() => CAPABILITY_MATRIX[protocol.value])
+
+/** 连接时实际使用的端口：VNC 优先扫描发现的显示号段，RDP 仅在发现 3389 时显式指定。 */
+const connectionPort = computed<number | undefined>(() => {
+  if (!props.device || protocol.value === 'rustdesk') return undefined
+  const detected = props.device.detectedPorts ?? []
+  if (protocol.value === 'vnc') {
+    return detected.find((p) => p >= 5900 && p <= 5910) ?? 5900
+  }
+  if (protocol.value === 'rdp') {
+    return detected.includes(3389) ? 3389 : undefined
+  }
+  return undefined
+})
+
+const detectedPortsLabel = computed(() => (props.device?.detectedPorts ?? []).join('、'))
+
+/** 按当前协议给出的针对性排查项，连接失败时自动展开。 */
+const troubleshooting = computed<{ title: string; items: string[] }[]>(() => {
+  const common = [
+    '确认目标设备 IP 填写正确，且主控端与被控端处于同一局域网。',
+    '确认被控端电脑已开机且未进入休眠。'
+  ]
+  if (protocol.value === 'rdp') {
+    return [
+      {
+        title: 'RDP 针对性检查',
+        items: [
+          '确认被控端为 Windows 专业版/企业版（家庭版默认不支持被远程桌面连接）。',
+          '确认被控端已启用“允许远程连接到此计算机”（设置 → 系统 → 远程桌面）。',
+          '确认被控端防火墙已放行 3389 端口（TCP）。',
+          '确认用于连接的账户设置了密码（空密码账户默认不允许 RDP 登录）。'
+        ]
+      },
+      { title: '通用检查', items: common }
+    ]
+  }
+  if (protocol.value === 'vnc') {
+    return [
+      {
+        title: 'VNC 针对性检查',
+        items: [
+          '确认被控端已开启屏幕共享/VNC 服务（macOS：系统设置 → 通用 → 共享 → 屏幕共享）。',
+          '确认 VNC 连接密码正确，且允许来自主控端的连接。',
+          '确认端口正确：若 VNC 运行在非 5900 端口（如 5901），请使用扫描发现的端口连接。'
+        ]
+      },
+      { title: '通用检查', items: common }
+    ]
+  }
+  return [
+    {
+      title: '通用检查',
+      items: [...common, '确认 RustDesk 客户端已安装并在线，且设备 ID 填写正确。']
+    }
+  ]
+})
 
 function availability(id: ProtocolId): ProtocolAvailability | undefined {
   return props.protocols.find((item) => item.id === id)
@@ -58,12 +117,18 @@ watch(
     rustdeskId.value = ''
     agreed.value = false
     precheck.value = null
+    precheckMessage.value = ''
+    lastFailed.value = false
+    activeTroubleshoot.value = []
   }
 )
 
 // 协议变化时同步共享开关默认值 + 重新预检
 watch(protocol, () => {
   precheck.value = null
+  precheckMessage.value = ''
+  lastFailed.value = false
+  activeTroubleshoot.value = []
   void loadDefaultsAndPrecheck()
 })
 
@@ -89,11 +154,17 @@ async function runPrecheck(): Promise<void> {
   if (!device) return
   prechecking.value = true
   try {
-    precheck.value = await unwrap(
-      api.sessionPrecheck(device.ip, protocol.value, protocol.value === 'vnc' ? 5900 : undefined)
-    )
-  } catch {
+    const response = await api.sessionPrecheck(device.ip, protocol.value, connectionPort.value)
+    if (response.code === 0 && response.data) {
+      precheck.value = response.data
+      precheckMessage.value = response.message === 'success' ? '' : response.message
+    } else {
+      precheck.value = null
+      precheckMessage.value = response.message || '端口预检失败'
+    }
+  } catch (error) {
     precheck.value = null
+    precheckMessage.value = error instanceof Error ? error.message : String(error)
   } finally {
     prechecking.value = false
   }
@@ -123,7 +194,7 @@ async function handleConnect(): Promise<void> {
         deviceId: device.id,
         ip: device.ip,
         protocol: protocol.value,
-        port: protocol.value === 'vnc' ? 5900 : undefined,
+        port: connectionPort.value,
         username: username.value || undefined,
         password: password.value || undefined,
         rustdeskId: rustdeskId.value || undefined,
@@ -132,14 +203,21 @@ async function handleConnect(): Promise<void> {
       })
     )
     if (!result.ok) {
+      // result.message 已由主进程带上失败分类提示，直接展示并展开排查指引。
+      lastFailed.value = true
+      activeTroubleshoot.value = ['guide']
       ElMessage.error(result.message)
       return
     }
+    lastFailed.value = false
+    activeTroubleshoot.value = []
     const capText = result.capabilities?.length ? `\n${result.capabilities.join('；')}` : ''
     ElMessage({ type: 'success', message: result.message + capText, duration: 8000 })
     emit('connected')
     visible.value = false
   } catch (error) {
+    lastFailed.value = true
+    activeTroubleshoot.value = ['guide']
     ElMessage.error(error instanceof Error ? error.message : String(error))
   } finally {
     connecting.value = false
@@ -184,6 +262,10 @@ async function handleConnect(): Promise<void> {
         <p v-if="availability(protocol) && !availability(protocol)!.available" class="ld-muted field-hint">
           {{ availability(protocol)!.detail }}
         </p>
+        <p v-if="detectedPortsLabel" class="ld-muted field-hint">
+          已发现端口：{{ detectedPortsLabel }}<template v-if="connectionPort"> · 本次自动使用 {{ connectionPort }}</template>
+        </p>
+        <p v-else class="ld-muted field-hint">未发现已识别服务端口，将使用协议默认端口连接。</p>
       </div>
 
       <!-- 连接前端口预检 -->
@@ -193,7 +275,7 @@ async function handleConnect(): Promise<void> {
           端口 {{ precheck.port }} 可达 · 往返约 {{ precheck.latencyMs }} ms
         </span>
         <span v-else>
-          端口 {{ precheck.port }} 未响应——请确认被控端已开启对应服务或检查防火墙
+          {{ precheckMessage || `端口 ${precheck.port} 未响应——请确认被控端已开启对应服务或检查防火墙` }}
         </span>
         <el-button link size="small" :loading="prechecking" @click="runPrecheck">重新检测</el-button>
       </div>
@@ -270,6 +352,20 @@ async function handleConnect(): Promise<void> {
           <el-switch v-model="remember" size="small" :disabled="!username" />
           使用 DPAPI 加密保存凭据到本机（不存明文）
         </p>
+      </div>
+
+      <!-- 连不上时的可折叠排查指引，失败后自动展开 -->
+      <div class="troubleshoot-box" :class="{ failed: lastFailed }">
+        <el-collapse v-model="activeTroubleshoot">
+          <el-collapse-item title="连不上？排查指引" name="guide">
+            <div v-for="group in troubleshooting" :key="group.title" class="troubleshoot-group">
+              <strong>{{ group.title }}</strong>
+              <ul>
+                <li v-for="(tip, idx) in group.items" :key="idx">{{ tip }}</li>
+              </ul>
+            </div>
+          </el-collapse-item>
+        </el-collapse>
       </div>
 
       <el-alert
@@ -414,5 +510,31 @@ async function handleConnect(): Promise<void> {
 }
 .text-online {
   color: var(--ld-success);
+}
+.troubleshoot-box {
+  border: 1px solid var(--ld-border);
+  border-radius: 8px;
+  background: #f8fafc;
+  padding: 2px 12px;
+}
+.troubleshoot-box.failed {
+  border-color: #fca5a5;
+  background: #fff7f7;
+}
+.troubleshoot-group + .troubleshoot-group {
+  margin-top: 10px;
+}
+.troubleshoot-group strong {
+  font-size: 12px;
+  color: #334155;
+}
+.troubleshoot-group ul {
+  margin: 6px 0 2px;
+  padding-left: 18px;
+}
+.troubleshoot-group li {
+  font-size: 12px;
+  line-height: 1.7;
+  color: #526074;
 }
 </style>

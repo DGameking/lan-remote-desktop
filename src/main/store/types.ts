@@ -15,6 +15,7 @@ export interface DeviceRow {
   osHint: OsHint
   source: DiscoverySource
   availableProtocols: string
+  detectedPorts: string
   online: number
   lastSeenAt: string
   createdAt: string
@@ -71,6 +72,7 @@ export function deviceToRow(device: Device): DeviceRow {
     osHint: device.osHint,
     source: device.source,
     availableProtocols: JSON.stringify(device.availableProtocols),
+    detectedPorts: JSON.stringify(device.detectedPorts ?? []),
     online: device.online ? 1 : 0,
     lastSeenAt: device.lastSeenAt,
     createdAt: device.createdAt,
@@ -90,6 +92,22 @@ export function rowToDevice(row: DeviceRow): Device {
   } catch {
     protocols = []
   }
+  let detectedPorts: number[] = []
+  try {
+    const parsed: unknown = JSON.parse(row.detectedPorts)
+    if (Array.isArray(parsed)) {
+      detectedPorts = [
+        ...new Set(
+          parsed.filter(
+            (p): p is number =>
+              typeof p === 'number' && Number.isInteger(p) && p >= 1 && p <= 65535
+          )
+        )
+      ]
+    }
+  } catch {
+    detectedPorts = []
+  }
   return {
     id: row.id,
     name: row.name,
@@ -98,6 +116,7 @@ export function rowToDevice(row: DeviceRow): Device {
     osHint: row.osHint,
     source: row.source,
     availableProtocols: protocols,
+    detectedPorts,
     online: row.online === 1,
     lastSeenAt: row.lastSeenAt,
     createdAt: row.createdAt,

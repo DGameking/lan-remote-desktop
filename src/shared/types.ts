@@ -36,6 +36,8 @@ export interface Device {
   osHint: OsHint
   source: DiscoverySource
   availableProtocols: ProtocolId[]
+  /** 该 IP 上扫描发现并做过服务识别的开放端口（用于连接时自动选用真实端口） */
+  detectedPorts: number[]
   online: boolean
   lastSeenAt: string
   createdAt: string
