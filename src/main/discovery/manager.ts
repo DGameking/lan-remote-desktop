@@ -173,14 +173,16 @@ export class ScanManager {
         const existing = candidates.find((candidate) => candidate.ip === record.ip)
         if (existing) {
           existing.name = existing.name || record.name
-          existing.ports = [...new Set([...(existing.ports ?? []), record.port])]
+          existing.ports = [...new Set([...(existing.ports ?? []), ...(record.ports ?? [record.port])])]
           existing.protocols = [...new Set([...(existing.protocols ?? []), ...record.protocols])]
+          existing.fingerprint = [...(existing.fingerprint ?? []), ...(record.fingerprint ?? [])]
         } else {
           candidates.push({
             ip: record.ip,
             name: record.name,
-            ports: [record.port],
+            ports: record.ports ?? [record.port],
             protocols: record.protocols,
+            fingerprint: record.fingerprint ?? [],
             source: 'mdns'
           })
         }

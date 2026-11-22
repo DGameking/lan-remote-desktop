@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { buildRdpContent } from '../src/main/protocols/rdp'
-import { isRdpPasswordHex } from '../src/main/store/dpapi'
+import { isRdpPasswordHex, normalizeRdpPasswordHex } from '../src/main/store/dpapi'
 
 // 合法的 DPAPI blob hex 样例：以 ConvertFrom-SecureString 的固定头开头，后接足够长度的密文体
 const VALID_HEX =
@@ -67,12 +67,34 @@ describe('isRdpPasswordHex - DPAPI blob hex 校验', () => {
     expect(isRdpPasswordHex(VALID_HEX)).toBe(true)
   })
 
+  it('大小写不敏感：大写/混合大小写的 DPAPI blob hex 也被接受（PowerShell 可能输出大写）', () => {
+    expect(isRdpPasswordHex('01000000D08C9DDF')).toBe(true) // 全大写前缀
+    expect(isRdpPasswordHex(VALID_HEX.toUpperCase())).toBe(true) // 整串大写
+    expect(isRdpPasswordHex('01000000D08c9DdF')).toBe(true) // 混合大小写
+  })
+
   it('拒绝 base64、空串、奇数长度、非 hex 与错误前缀', () => {
     expect(isRdpPasswordHex('')).toBe(false)
     expect(isRdpPasswordHex('01000000d08c9ddf0')).toBe(false) // 奇数长度
     expect(isRdpPasswordHex('01000000d08c9ddfZZ')).toBe(false) // 非 hex
     expect(isRdpPasswordHex('abcdefabcdef')).toBe(false) // 错误前缀
-    expect(isRdpPasswordHex('01000000D08C9DDF')).toBe(false) // 大写不被接受
     expect(isRdpPasswordHex('v0w=')).toBe(false) // base64
+  })
+})
+
+describe('normalizeRdpPasswordHex - hex 大小写归一化', () => {
+  it('把大写 hex 归一化为全小写', () => {
+    expect(normalizeRdpPasswordHex('01000000D08C9DDF')).toBe('01000000d08c9ddf')
+    expect(normalizeRdpPasswordHex(VALID_HEX.toUpperCase())).toBe(VALID_HEX)
+  })
+
+  it('幂等：对已为小写的输入保持不变', () => {
+    expect(normalizeRdpPasswordHex(VALID_HEX)).toBe(VALID_HEX)
+  })
+
+  it('归一化后的结果仍通过 DPAPI blob 校验', () => {
+    const normalized = normalizeRdpPasswordHex(VALID_HEX.toUpperCase())
+    expect(isRdpPasswordHex(normalized)).toBe(true)
+    expect(normalized).toBe(normalized.toLowerCase())
   })
 })

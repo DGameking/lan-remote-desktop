@@ -28,6 +28,11 @@ const api: ElectronAPI = {
   sessionList: () => ipcRenderer.invoke(IPC_CHANNELS.SESSION_LIST),
   fileTransferOpen: (target) => ipcRenderer.invoke(IPC_CHANNELS.FILE_TRANSFER_OPEN, target),
   appGetStatus: () => ipcRenderer.invoke(IPC_CHANNELS.APP_GET_STATUS),
+  appGetDiagnostics: () => ipcRenderer.invoke(IPC_CHANNELS.APP_GET_DIAGNOSTICS),
+  appExportDiagnostics: () => ipcRenderer.invoke(IPC_CHANNELS.APP_EXPORT_DIAGNOSTICS),
+  logQuery: (query) => ipcRenderer.invoke(IPC_CHANNELS.LOG_QUERY, query),
+  serverOpen: (target) => ipcRenderer.invoke(IPC_CHANNELS.SERVER_OPEN, target),
+  deviceWake: (target) => ipcRenderer.invoke(IPC_CHANNELS.DEVICE_WAKE, target),
   settingsGet: () => ipcRenderer.invoke(IPC_CHANNELS.SETTINGS_GET),
   settingsSet: (patch) => ipcRenderer.invoke(IPC_CHANNELS.SETTINGS_SET, patch)
 }

@@ -145,6 +145,8 @@ export interface ConnectRequest {
   clipboardSharing?: boolean
   /** 本次会话是否开启磁盘重定向（不传则沿用全局设置） */
   driveRedirection?: boolean
+  /** 连接前端口预检结果（由渲染层带入，用于把预检与本次连接串进同一条事件链） */
+  precheck?: PrecheckResult
 }
 
 /** 连接结果 */
@@ -181,6 +183,8 @@ export interface PrecheckResult {
   port: number
   reachable: boolean
   latencyMs: number
+  /** rustdesk 等不做 TCP 预检的协议，标记跳过，UI 不应显示为「不可达」 */
+  skipped?: boolean
 }
 
 /** 文件传输目标（SMB 共享） */
@@ -224,6 +228,11 @@ export const IPC_CHANNELS = {
   SESSION_LIST: 'session:list',
   FILE_TRANSFER_OPEN: 'file-transfer:open',
   APP_GET_STATUS: 'app:getStatus',
+  APP_GET_DIAGNOSTICS: 'app:getDiagnostics',
+  APP_EXPORT_DIAGNOSTICS: 'app:exportDiagnostics',
+  LOG_QUERY: 'log:query',
+  SERVER_OPEN: 'server:open',
+  DEVICE_WAKE: 'device:wake',
   SETTINGS_GET: 'settings:get',
   SETTINGS_SET: 'settings:set'
 } as const
@@ -293,6 +302,109 @@ export const PROTOCOL_PRECHECK_PORT: Record<ProtocolId, number> = {
   rustdesk: 0
 }
 
+/* ==========================================================================
+ * v1.3.0 本地可观测性契约（零遥测：以下所有数据仅在本机产生与读取）
+ * ========================================================================== */
+
+export type LogLevel = 'INFO' | 'WARN' | 'ERROR'
+
+/** 结构化日志条目：一行一条 JSON Lines，写入 userData/logs/*.jsonl */
+export interface LogEntry {
+  ts: string
+  level: LogLevel
+  module: string
+  event: string
+  /** 已脱敏的上下文；敏感键统一替换为 [REDACTED]，局域网 IP 保留完整 */
+  context?: Record<string, unknown>
+  /** 仅使用随机 sessionId（randomUUID），绝不使用 deviceId */
+  traceId?: string
+}
+
+/** 日志查询条件；limit 默认 200、硬上限 1000 */
+export interface LogQuery {
+  levels?: LogLevel[]
+  module?: string
+  from?: string
+  to?: string
+  traceId?: string
+  keyword?: string
+  limit?: number
+}
+
+export interface RecentSessionView {
+  protocol: ProtocolId
+  status: SessionStatus
+  startedAt: string
+  errorMessageRedacted: string
+}
+
+/** app:getDiagnostics 返回的运行状态快照（AppStatus 的超集，绝不含凭据） */
+export interface DiagnosticsSnapshot {
+  generatedAt: string
+  app: {
+    version: string
+    platform: string
+    arch: string
+    electronVersion: string
+    uptimeSeconds: number
+    storeMode: 'sqlite' | 'json'
+    subnetRedacted: string
+    safeStorageAvailable: boolean
+  }
+  settings: {
+    complianceAccepted: boolean
+    telemetryConsent: boolean
+    clipboardSharing: boolean
+    driveRedirection: boolean
+    hasVncViewerPath: boolean
+    hasRustdeskPath: boolean
+    hasDefaultShareName: boolean
+  }
+  protocols: { id: ProtocolId; available: boolean }[]
+  counts: { devices: number; credentials: number; sessions: number; logFiles: number }
+  sessionState: SessionStatus
+  recentSessions: RecentSessionView[]
+  recentErrors: LogEntry[]
+  lastScan?: { subnetRedacted: string; deviceCount: number; finishedAt: string; durationMs?: number }
+}
+
+/** 自包含诊断包（schemaVersion 固定为 1） */
+export interface DiagnosticsBundle {
+  schemaVersion: 1
+  snapshot: DiagnosticsSnapshot
+  logs: LogEntry[]
+}
+
+/** 导出结果：text 可直接复制给 AI，filePath 为本机固定路径 */
+export interface DiagnosticsExportResult {
+  text: string
+  filePath: string
+}
+
+/* ---------- 内网管理页入口与远程唤醒（v1.3.0 新增通道） ---------- */
+
+export interface ServerLinkTarget {
+  ip: string
+  port: number
+}
+
+export interface ServerLinkResult {
+  ok: boolean
+  message: string
+  url: string
+}
+
+export interface WakeTarget {
+  mac: string
+  ip?: string
+}
+
+export interface WakeResult {
+  ok: boolean
+  message: string
+  broadcast: string
+}
+
 /** contextBridge 暴露给渲染层的 API 契约 */
 export interface ElectronAPI {
   discoveryStart: () => Promise<IpcResponse<{ subnet: string }>>
@@ -309,6 +421,11 @@ export interface ElectronAPI {
   sessionList: () => Promise<IpcResponse<SessionRecord[]>>
   fileTransferOpen: (target: FileTransferTarget) => Promise<IpcResponse<FileTransferResult>>
   appGetStatus: () => Promise<IpcResponse<AppStatus>>
+  appGetDiagnostics: () => Promise<IpcResponse<DiagnosticsSnapshot>>
+  appExportDiagnostics: () => Promise<IpcResponse<DiagnosticsExportResult>>
+  logQuery: (query: LogQuery) => Promise<IpcResponse<LogEntry[]>>
+  serverOpen: (target: ServerLinkTarget) => Promise<IpcResponse<ServerLinkResult>>
+  deviceWake: (target: WakeTarget) => Promise<IpcResponse<WakeResult>>
   settingsGet: () => Promise<IpcResponse<AppSettings>>
   settingsSet: (patch: Partial<AppSettings>) => Promise<IpcResponse<AppSettings>>
 }

@@ -66,12 +66,24 @@ watch(
     rustdeskId.value = ''
     clipboardSharing.value = true
     driveRedirection.value = false
-    agreed.value = false
+    // 合规勾选按已确认设置回填，已确认过的用户无需每次重勾
+    void loadCompliance()
     connecting.value = false
   }
 )
 
-// 输入变化时智能解析并回填 IP / 端口 / 协议提示
+async function loadCompliance(): Promise<void> {
+  try {
+    const settings = await unwrap(api.settingsGet())
+    agreed.value = settings.complianceAccepted
+    clipboardSharing.value = settings.clipboardSharing
+    driveRedirection.value = settings.driveRedirection
+  } catch {
+    agreed.value = false
+  }
+}
+
+// 输入变化时智能解析并回填 IP / 端口 / 协议提示；并尝试带出该 IP 已保存的账号
 watch(target, (value) => {
   const parsed = parseTarget(value)
   if (!parsed) return
@@ -86,13 +98,27 @@ watch(target, (value) => {
     portManuallySet.value = false
     port.value = defaultPortFor(protocol.value)
   }
+  void prefillCredential(parsed.ip, protocol.value)
 })
 
-// 协议变化时，若端口未被手动指定则预填该协议默认端口
+// 若该 IP + 协议已保存过凭据，回填用户名（密码不入 UI，由主进程按 deviceId 解密回填）
+async function prefillCredential(targetIp: string, proto: ProtocolId): Promise<void> {
+  try {
+    const deviceId = 'quick-' + targetIp.replace(/\./g, '-')
+    const list = await unwrap(api.credentialList())
+    const saved = list.find((item) => item.deviceId === deviceId && item.protocol === proto)
+    if (saved) username.value = saved.username
+  } catch {
+    // 凭据读取失败不阻断输入
+  }
+}
+
+// 协议变化时，若端口未被手动指定则预填该协议默认端口，并尝试带出该协议的已存账号
 watch(protocol, (value) => {
   if (!portManuallySet.value) {
     port.value = defaultPortFor(value)
   }
+  if (ip.value) void prefillCredential(ip.value, value)
 })
 
 function onPortChange(): void {
@@ -128,6 +154,26 @@ async function handleConnect(): Promise<void> {
     if (!result.ok) {
       ElMessage.error(result.message)
       return
+    }
+    // 自动保存账号密码：与快速连接的 deviceId 一致，下次输入同一 IP 即可免密直连。
+    // RustDesk 凭据由官方客户端管理，不入库；仅账号密码都填写时保存。
+    if (
+      current !== 'rustdesk' &&
+      username.value &&
+      password.value
+    ) {
+      try {
+        await unwrap(
+          api.credentialSet({
+            deviceId: request.deviceId,
+            protocol: current,
+            username: username.value,
+            password: password.value
+          })
+        )
+      } catch {
+        // 凭据保存失败不阻断已成功的连接
+      }
     }
     const capText = result.capabilities?.length ? `\n${result.capabilities.join('；')}` : ''
     ElMessage({ type: 'success', message: result.message + capText, duration: 8000 })

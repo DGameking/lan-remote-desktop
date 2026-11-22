@@ -26,7 +26,8 @@ const visible = computed({
 const protocol = ref<ProtocolId>('rdp')
 const username = ref('')
 const password = ref('')
-const remember = ref(false)
+// 默认开启：输入账密即自动保存，下次点击同一设备免密直连（用户可手动关闭）
+const remember = ref(true)
 const rustdeskId = ref('')
 const clipboardSharing = ref(true)
 const driveRedirection = ref(false)
@@ -113,13 +114,17 @@ watch(
     protocol.value = device.availableProtocols[0] ?? (device.osHint === 'windows' ? 'rdp' : 'vnc')
     username.value = ''
     password.value = ''
-    remember.value = false
+    remember.value = true
     rustdeskId.value = ''
-    agreed.value = false
+    // 合规勾选不硬重置：由 loadDefaultsAndPrecheck 按已确认设置回填，
+    // 已确认过的用户不必每次连接都重勾（v1.3.0）。
     precheck.value = null
     precheckMessage.value = ''
     lastFailed.value = false
     activeTroubleshoot.value = []
+    // 组件常驻挂载：首次打开某设备时协议可能未变化（如默认 RDP），
+    // 因此必须在 device 变化时主动回填设置并触发预检，否则预检条永远不出现。
+    void loadDefaultsAndPrecheck()
   }
 )
 
@@ -141,6 +146,7 @@ async function loadDefaultsAndPrecheck(): Promise<void> {
     const settings = await unwrap(api.settingsGet())
     clipboardSharing.value = settings.clipboardSharing
     driveRedirection.value = settings.driveRedirection
+    agreed.value = settings.complianceAccepted
     if (props.device && protocol.value !== 'rustdesk') {
       await runPrecheck()
     }
@@ -178,17 +184,14 @@ async function handleConnect(): Promise<void> {
     return
   }
   connecting.value = true
+  // 先连接、后保存：凭据保存失败绝不能阻断本次连接（QA 审查 P1）。
+  // 记住开启且本次输入了账号密码时才保存（首次录入）；RustDesk 凭据由官方客户端管理，不入库。
+  const shouldSave =
+    remember.value && protocol.value !== 'rustdesk' && !!username.value && !!password.value
+  const saveProtocol = protocol.value
+  const saveUsername = username.value
+  const savePassword = password.value
   try {
-    if (remember.value && protocol.value !== 'rustdesk' && username.value) {
-      await unwrap(
-        api.credentialSet({
-          deviceId: device.id,
-          protocol: protocol.value,
-          username: username.value,
-          password: password.value
-        })
-      )
-    }
     const result = await unwrap(
       api.sessionConnect({
         deviceId: device.id,
@@ -199,7 +202,9 @@ async function handleConnect(): Promise<void> {
         password: password.value || undefined,
         rustdeskId: rustdeskId.value || undefined,
         clipboardSharing: clipboardSharing.value,
-        driveRedirection: protocol.value === 'rdp' ? driveRedirection.value : undefined
+        driveRedirection: protocol.value === 'rdp' ? driveRedirection.value : undefined,
+        // 带上预检结果，把"端口预检"与"本次连接"串进同一条 traceId 事件链
+        precheck: precheck.value ?? undefined
       })
     )
     if (!result.ok) {
@@ -208,6 +213,21 @@ async function handleConnect(): Promise<void> {
       activeTroubleshoot.value = ['guide']
       ElMessage.error(result.message)
       return
+    }
+    // 连接已成功后才保存凭据，且独立吞掉失败，不影响本次连接。
+    if (shouldSave) {
+      try {
+        await unwrap(
+          api.credentialSet({
+            deviceId: device.id,
+            protocol: saveProtocol,
+            username: saveUsername,
+            password: savePassword
+          })
+        )
+      } catch {
+        // 凭据保存失败不阻断已成功的连接，下次会退回手输
+      }
     }
     lastFailed.value = false
     activeTroubleshoot.value = []
@@ -268,8 +288,11 @@ async function handleConnect(): Promise<void> {
         <p v-else class="ld-muted field-hint">未发现已识别服务端口，将使用协议默认端口连接。</p>
       </div>
 
-      <!-- 连接前端口预检 -->
-      <div v-if="precheck && precheck.port > 0" class="precheck-bar" :class="precheck.reachable ? 'ok' : 'bad'">
+      <!-- 连接前端口预检：skipped 表示协议不做 TCP 探测（如 RustDesk），不显示"不可达"红点 -->
+      <div v-if="precheck && precheck.skipped" class="precheck-bar skipped">
+        <span>该协议由客户端自行处理连接，跳过端口预检</span>
+      </div>
+      <div v-else-if="precheck && precheck.port > 0" class="precheck-bar" :class="precheck.reachable ? 'ok' : 'bad'">
         <span class="precheck-dot" />
         <span v-if="precheck.reachable">
           端口 {{ precheck.port }} 可达 · 往返约 {{ precheck.latencyMs }} ms
@@ -340,7 +363,7 @@ async function handleConnect(): Promise<void> {
 
       <div class="notice">
         <p v-if="protocol === 'rdp'">
-          RDP 密码<b>不会写入 .rdp 文件</b>，在 mstsc 窗口中手动输入最安全。
+          RDP 密码经系统 DPAPI 加密后仅在本机有效，<b>不会明文写入 .rdp 文件、不进进程命令行</b>；开启保存后下次可免密直连。
         </p>
         <p v-else-if="protocol === 'vnc'">
           VNC 协议使用明文传输风险较高，请仅在可信局域网使用；密码由 VNC Viewer 弹窗输入，不经命令行传递。
@@ -349,8 +372,8 @@ async function handleConnect(): Promise<void> {
           RustDesk 的剪贴板同步与文件传输由官方客户端原生提供，连接后在其窗口内使用。
         </p>
         <p v-if="protocol !== 'rustdesk'">
-          <el-switch v-model="remember" size="small" :disabled="!username" />
-          使用 DPAPI 加密保存凭据到本机（不存明文）
+          <el-switch v-model="remember" size="small" />
+          <span>自动保存账号密码到本机（DPAPI 加密，不存明文），下次点击直接连接</span>
         </p>
       </div>
 
@@ -439,6 +462,10 @@ async function handleConnect(): Promise<void> {
 .precheck-bar.bad {
   background: #fef2f2;
   color: #991b1b;
+}
+.precheck-bar.skipped {
+  background: #f1f5f9;
+  color: #475569;
 }
 .precheck-dot {
   width: 8px;

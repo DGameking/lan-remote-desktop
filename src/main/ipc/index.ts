@@ -1,18 +1,30 @@
 import { randomUUID } from 'node:crypto'
-import { app, ipcMain, type BrowserWindow } from 'electron'
+import { app, ipcMain, shell, type BrowserWindow } from 'electron'
 import {
   IPC_CHANNELS,
+  PROTOCOL_PRECHECK_PORT,
   type AppStatus,
   type CredentialView,
-  type IpcResponse
+  type IpcResponse,
+  type ServerLinkResult,
+  type WakeResult
 } from '../../shared/types'
 import type { ScanManager } from '../discovery/manager'
-import { probePort } from '../discovery/precheck'
+import { probePortWithRetry } from '../discovery/precheck'
 import { detectSubnets } from '../discovery/subnet'
-import { logger } from '../logger'
+import { broadcastForCidr, sendWakeOnLan } from '../discovery/wol'
+import { logger, scopedLogger } from '../logger'
+import {
+  collectDiagnosticsInput,
+  exportDiagnosticsBundle,
+  readRecentLogs,
+  recordScanFinished
+} from '../observability/collector'
+import { buildDiagnosticsSnapshot } from '../observability/diagnostics'
+import { filterLogEntries } from '../observability/query'
 import { openFileShare } from '../protocols/fileshare'
 import { getAvailability, isProtocolId } from '../protocols/registry'
-import { PROTOCOL_PRECHECK_PORT } from '../../shared/types'
+import { buildManageUrl } from '../protocols/serverlink'
 import type { SessionManager } from '../session/manager'
 import { encryptPassword } from '../store/crypto'
 import { deviceToRow, getSettings, getStore, now, rowToDevice, saveSettings } from '../store'
@@ -25,7 +37,10 @@ import {
   validateDevice,
   validateFileTransferTarget,
   validateId,
-  validateSettingsPatch
+  validateLogQuery,
+  validateServerLinkTarget,
+  validateSettingsPatch,
+  validateWakeTarget
 } from './validators'
 
 function errorResponse(context: string, error: unknown): IpcResponse<never> {
@@ -167,10 +182,25 @@ export function registerIpc(
         const port =
           typeof rawPort === 'number' && rawPort > 0 && rawPort <= 65535 ? rawPort : fallback
         if (!port) {
-          // rustdesk 走 21116/中继，单纯 TCP 探测无意义，直接返回 skipped 语义（reachable=true 仅供参考）
-          return ok({ ip: rawIp, port: 0, reachable: true, latencyMs: 0 }, '该协议跳过端口预检')
+          // rustdesk 走 21116/中继，TCP 探测无意义，返回 skipped 语义（UI 不应显示为「不可达」）
+          return ok(
+            { ip: rawIp, port: 0, reachable: false, latencyMs: 0, skipped: true },
+            '该协议跳过端口预检'
+          )
         }
-        const result = await probePort(rawIp, port)
+        const result = await probePortWithRetry(rawIp, port)
+        // 事件链埋点：IP 交给 scopedLogger 内部 redact 统一处理，此处只传原始值
+        scopedLogger('ipc').event({
+          level: 'INFO',
+          event: 'precheck.done',
+          context: {
+            ip: rawIp,
+            port,
+            reachable: result.reachable,
+            latencyMs: result.latencyMs,
+            skipped: result.skipped ?? false
+          }
+        })
         return result.reachable ? ok(result) : ok(result, precheckFailureHint(port))
       } catch (error) {
         return errorResponse('session:precheck', error)
@@ -213,6 +243,73 @@ export function registerIpc(
     }
   })
 
+  // 诊断快照：采集本机运行状态（零遥测、绝不含凭据 / 路径 / MAC）
+  ipcMain.handle(IPC_CHANNELS.APP_GET_DIAGNOSTICS, async (): Promise<IpcResponse> => {
+    try {
+      return ok(
+        buildDiagnosticsSnapshot(
+          await collectDiagnosticsInput({ getSessionState: () => sessionManager.getStatus().state })
+        )
+      )
+    } catch (error) {
+      return errorResponse('app:getDiagnostics', error)
+    }
+  })
+
+  // 诊断包导出：全程本机读写，绝不上传
+  ipcMain.handle(IPC_CHANNELS.APP_EXPORT_DIAGNOSTICS, async (): Promise<IpcResponse> => {
+    try {
+      return ok(await exportDiagnosticsBundle(), '诊断包已导出到本机，可直接复制文本反馈')
+    } catch (error) {
+      return errorResponse('app:exportDiagnostics', error)
+    }
+  })
+
+  // 本地日志查询：入参经白名单校验后再过滤，limit 有硬上限
+  ipcMain.handle(IPC_CHANNELS.LOG_QUERY, async (_event, payload: unknown): Promise<IpcResponse> => {
+    try {
+      const query = validateLogQuery(payload)
+      return ok(filterLogEntries(readRecentLogs(), query))
+    } catch (error) {
+      return errorResponse('log:query', error)
+    }
+  })
+
+  // 内网管理页：防 SSRF 白名单必须取自主进程 store 中该设备真实 detectedPorts，
+  // 渲染层只传单个目标 port；URL 由主进程生成后交给系统默认浏览器打开。
+  ipcMain.handle(IPC_CHANNELS.SERVER_OPEN, async (_event, payload: unknown): Promise<IpcResponse> => {
+    try {
+      const { ip, port } = validateServerLinkTarget(payload)
+      const device = getStore()
+        .listDevices()
+        .map(rowToDevice)
+        .find((item) => item.ip === ip)
+      const detectedPorts = device?.detectedPorts ?? []
+      const built = buildManageUrl({ ip, port, detectedPorts })
+      if (!built.ok || !built.url) return fail(built.message)
+      await shell.openExternal(built.url)
+      const result: ServerLinkResult = { ok: true, message: built.message, url: built.url }
+      return ok(result)
+    } catch (error) {
+      return errorResponse('server:open', error)
+    }
+  })
+
+  // 远程唤醒：广播地址只由主进程依据本机网段生成，绝不接受渲染层传入；
+  // 返回与日志都不写 MAC（sendWakeOnLan 的 message 只含广播地址）。
+  ipcMain.handle(IPC_CHANNELS.DEVICE_WAKE, async (_event, payload: unknown): Promise<IpcResponse> => {
+    try {
+      const { mac } = validateWakeTarget(payload)
+      const cidr = detectSubnets()[0]?.cidr
+      const broadcast = cidr ? (broadcastForCidr(cidr) ?? '255.255.255.255') : '255.255.255.255'
+      const sent = await sendWakeOnLan({ mac, broadcast })
+      const result: WakeResult = { ok: sent.ok, message: sent.message, broadcast: sent.broadcast }
+      return ok(result)
+    } catch (error) {
+      return errorResponse('device:wake', error)
+    }
+  })
+
   ipcMain.handle(IPC_CHANNELS.SETTINGS_GET, async (): Promise<IpcResponse> => {
     try {
       return ok(getSettings())
@@ -229,8 +326,9 @@ export function registerIpc(
     }
   })
 
-  // 扫描进度由主进程主动推送，使用独立事件通道
+  // 扫描进度由主进程主动推送，使用独立事件通道；同时缓存最近一次扫描统计供诊断快照使用
   scanManager.setOnProgress((progress) => {
+    recordScanFinished(progress)
     getWindow()?.webContents.send(IPC_CHANNELS.DISCOVERY_PROGRESS, progress)
   })
 }

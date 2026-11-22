@@ -3,6 +3,7 @@ import { onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { api, unwrap } from '../api'
 import type { AppSettings, CredentialView, Device, ProtocolId } from '../../../shared/types'
+import Diagnostics from './Diagnostics.vue'
 
 const emit = defineEmits<{ (e: 'changed'): void }>()
 
@@ -162,9 +163,10 @@ async function resetCompliance(): Promise<void> {
         <span>RDP 连接时允许用 Windows 凭据管理器预置账号（默认关闭）</span>
       </div>
       <div class="switch-row">
-        <el-switch v-model="settings.telemetryConsent" />
-        <span>允许匿名遥测（默认关闭，当前版本不上报任何数据）</span>
+        <el-switch v-model="settings.telemetryConsent" disabled />
+        <span>允许匿名遥测（默认关闭，当前不生效）</span>
       </div>
+      <p class="ld-muted telemetry-note">当前版本不采集、不上传任何遥测或诊断数据，此开关为未来版本预留，保持关闭。</p>
       <el-button type="primary" :loading="saving" @click="saveSettings">保存设置</el-button>
     </section>
 
@@ -240,6 +242,12 @@ async function resetCompliance(): Promise<void> {
       </ul>
       <el-button plain @click="resetCompliance">重新显示首次合规声明</el-button>
     </section>
+
+    <section class="ld-panel wide">
+      <h2>运行状态与诊断</h2>
+      <p class="ld-muted section-hint">查看软件运行状态、检索本机日志；导出诊断包后可复制脱敏文本交给 AI 排查问题。所有数据仅留本机，零遥测。</p>
+      <Diagnostics />
+    </section>
   </div>
 </template>
 
@@ -275,6 +283,10 @@ h2 {
   gap: 10px;
   font-size: 12px;
   margin: 10px 0;
+}
+.telemetry-note {
+  font-size: 12px;
+  margin: 0 0 10px;
 }
 .privacy-list {
   font-size: 12px;

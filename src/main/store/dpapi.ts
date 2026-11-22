@@ -13,11 +13,23 @@ const PS_SCRIPT =
 const PS_TIMEOUT_MS = 8000
 const DPAPI_HEX_PREFIX = '01000000d08c9ddf'
 
-/** 校验是否为合法的 DPAPI blob hex（纯函数，便于单测，不触碰任何敏感数据） */
+/**
+ * 把 DPAPI blob hex 归一化为小写（纯函数，便于单测，不触碰任何敏感数据）。
+ * PowerShell 的 ConvertFrom-SecureString 在不同版本/区域设置下可能输出大写 hex，
+ * 而 mstsc 对 `password 51:b:` 的取值大小写不敏感；统一小写可避免免密静默降级。
+ */
+export function normalizeRdpPasswordHex(value: string): string {
+  return value.toLowerCase()
+}
+
+/**
+ * 校验是否为合法的 DPAPI blob hex（纯函数，便于单测，不触碰任何敏感数据）。
+ * 大小写不敏感：前缀用小写比对，字符集合法性允许 A-F，避免大写输出被误判为非法。
+ */
 export function isRdpPasswordHex(value: string): boolean {
   if (!value || value.length % 2 !== 0) return false
-  if (!value.startsWith(DPAPI_HEX_PREFIX)) return false
-  return /^[0-9a-f]+$/.test(value)
+  if (!normalizeRdpPasswordHex(value).startsWith(DPAPI_HEX_PREFIX)) return false
+  return /^[0-9a-fA-F]+$/.test(value)
 }
 
 /**
@@ -91,7 +103,8 @@ export function generateRdpPasswordHex(password: string): Promise<string> {
         fail(new Error('PowerShell 返回的凭据格式不符合 DPAPI blob 规范，已放弃自动登录'))
         return
       }
-      succeed(hex)
+      // 归一化为小写后再返回，保证写入 .rdp 的 blob hex 格式稳定（大小写不影响可用性）
+      succeed(normalizeRdpPasswordHex(hex))
     })
 
     if (!child.stdin) {

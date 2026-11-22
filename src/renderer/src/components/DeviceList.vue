@@ -1,5 +1,7 @@
 <script setup lang="ts">
 import { ref } from 'vue'
+import { ElMessage } from 'element-plus'
+import { api, unwrap } from '../api'
 import type { Device, OsHint, ProtocolId } from '../../../shared/types'
 
 const props = defineProps<{ devices: Device[]; loading?: boolean }>()
@@ -43,6 +45,43 @@ function formatTime(value: string): string {
   if (!value) return '-'
   const date = new Date(value)
   return Number.isNaN(date.getTime()) ? value : date.toLocaleString('zh-CN', { hour12: false })
+}
+
+/** Web 管理页候选端口（按优先级）。URL 由主进程严格校验后生成并打开，不在渲染层拼装。 */
+const SERVER_PORT_PRIORITY = [8000, 8001, 5666, 548, 5985, 5986]
+const SERVER_LINK_TIP = '仅内网 IP + 已发现端口，由主进程校验后打开系统默认浏览器'
+const WOL_TIP_LINES = [
+  '远程唤醒（WoL）是 best-effort 的 UDP 广播魔术包，没有送达回执，无法确认设备是否真正开机。',
+  '需被控端预先在 BIOS / 网卡开启 Wake-on-LAN，并连接网线（有线）。',
+  '仅在同一网段（同一广播域）内有效。',
+  '跨网段、经路由器转发或 Wi-Fi 无线连接通常无效。',
+  '发送后请稍等片刻，再尝试扫描或连接。'
+]
+
+/** 仅返回该设备 discovered 端口中命中 Web 管理白名单的端口，按优先级排序。 */
+function serverPorts(device: Device): number[] {
+  const detected = device.detectedPorts ?? []
+  return SERVER_PORT_PRIORITY.filter((port) => detected.includes(port))
+}
+
+async function openServer(device: Device, port: number): Promise<void> {
+  try {
+    const result = await unwrap(api.serverOpen({ ip: device.ip, port }))
+    if (result.ok) ElMessage.success(result.message)
+    else ElMessage.error(result.message)
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : String(error))
+  }
+}
+
+async function wakeDevice(device: Device): Promise<void> {
+  try {
+    const result = await unwrap(api.deviceWake({ mac: device.mac, ip: device.ip }))
+    if (result.ok) ElMessage.success(result.message)
+    else ElMessage.error(result.message)
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : String(error))
+  }
 }
 </script>
 
@@ -90,6 +129,29 @@ function formatTime(value: string): string {
           >{{ protocolLabels[protocol] }}</span>
           <span v-if="device.availableProtocols.length === 0" class="ld-tag muted">未探测到开放端口</span>
         </div>
+        <div v-if="serverPorts(device).length > 0 || device.mac" class="card-extra">
+          <el-tooltip v-if="serverPorts(device).length === 1" :content="SERVER_LINK_TIP" placement="top">
+            <el-button size="small" plain @click="openServer(device, serverPorts(device)[0])">管理页</el-button>
+          </el-tooltip>
+          <el-dropdown v-else-if="serverPorts(device).length > 1" trigger="click">
+            <el-button size="small" plain>管理页（{{ serverPorts(device).length }}）▾</el-button>
+            <template #dropdown>
+              <el-dropdown-menu>
+                <el-dropdown-item v-for="port in serverPorts(device)" :key="port" @click="openServer(device, port)">
+                  端口 {{ port }}
+                </el-dropdown-item>
+              </el-dropdown-menu>
+            </template>
+          </el-dropdown>
+          <el-tooltip v-if="device.mac" placement="top">
+            <template #content>
+              <div style="max-width: 300px; font-size: 12px; line-height: 1.7">
+                <div v-for="(line, idx) in WOL_TIP_LINES" :key="idx">{{ line }}</div>
+              </div>
+            </template>
+            <el-button size="small" plain @click="wakeDevice(device)">远程唤醒</el-button>
+          </el-tooltip>
+        </div>
         <div class="card-footer">
           <span class="ld-muted last-seen">最近发现 {{ formatTime(device.lastSeenAt) }}</span>
           <div class="footer-actions">
@@ -129,10 +191,35 @@ function formatTime(value: string): string {
           <span v-if="(scope.row as Device).availableProtocols.length === 0" class="ld-muted">-</span>
         </template>
       </el-table-column>
-      <el-table-column label="操作" width="150" fixed="right">
+      <el-table-column label="操作" width="320" fixed="right">
         <template #default="scope">
           <el-button link type="primary" size="small" @click="emit('connect', scope.row as Device)">连接</el-button>
           <el-button link size="small" @click="emit('file-transfer', scope.row as Device)">传文件</el-button>
+          <el-tooltip v-if="serverPorts(scope.row as Device).length === 1" :content="SERVER_LINK_TIP" placement="top">
+            <el-button link size="small" @click="openServer(scope.row as Device, serverPorts(scope.row as Device)[0])">管理页</el-button>
+          </el-tooltip>
+          <el-dropdown v-else-if="serverPorts(scope.row as Device).length > 1" trigger="click">
+            <el-button link size="small">管理页▾</el-button>
+            <template #dropdown>
+              <el-dropdown-menu>
+                <el-dropdown-item
+                  v-for="port in serverPorts(scope.row as Device)"
+                  :key="port"
+                  @click="openServer(scope.row as Device, port)"
+                >
+                  端口 {{ port }}
+                </el-dropdown-item>
+              </el-dropdown-menu>
+            </template>
+          </el-dropdown>
+          <el-tooltip v-if="(scope.row as Device).mac" placement="top">
+            <template #content>
+              <div style="max-width: 300px; font-size: 12px; line-height: 1.7">
+                <div v-for="(line, idx) in WOL_TIP_LINES" :key="idx">{{ line }}</div>
+              </div>
+            </template>
+            <el-button link size="small" @click="wakeDevice(scope.row as Device)">远程唤醒</el-button>
+          </el-tooltip>
         </template>
       </el-table-column>
     </el-table>
@@ -228,6 +315,12 @@ function formatTime(value: string): string {
 .protocol-row {
   margin: 12px 0;
   min-height: 24px;
+}
+.card-extra {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 10px 0 2px;
 }
 .card-footer {
   display: flex;
