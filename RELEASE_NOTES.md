@@ -1,5 +1,17 @@
 # LanDesk 发布说明
 
+## v1.5.1 · 连接报错修复版（2026-11-22）
+
+### 一句话
+
+修复用户实测「连接 macOS 时弹出红色错误条 `An object could not be cloned.`、无法发起连接」的问题。根因是渲染层把 Vue 响应式对象（Proxy）当作 IPC 参数传给主进程，Electron 的结构化克隆拒绝克隆 Proxy。**本次为纯修复版，不改变任何功能边界。**
+
+### 修复内容
+
+- **IPC 参数净化（根因修复）**：新增 `src/shared/ipc-sanitize.ts` 的 `toPlain()`，递归把 Proxy/响应式对象转成结构化可克隆的纯数据；preload 层对 `sessionConnect`/`credentialSet`/`deviceUpsert`/`settingsSet`/`logQuery`/`serverOpen`/`deviceWake`/`fileTransferOpen` 等所有对象参数统一净化，作为纵深防御。
+- **连接对话框治本修复**：`ConnectDialog.vue` 传给 IPC 的 `precheck` 由 `ref` 内响应式对象改为显式展开的纯对象快照 `precheckSnapshot()`，不依赖兜底。
+- **回归测试**：新增 `tests/ipc-sanitize.test.ts`（9 用例），用真实 `reactive`/`ref` 验证 Proxy 被净化且可被 `structuredClone`，并证明未净化时必然失败。全量测试 321→**330（24 文件）**。
+
 ## v1.5.0 · 安全底座与会话闭环版（2026-11-22）
 
 ### 一句话

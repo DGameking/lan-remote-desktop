@@ -204,6 +204,21 @@ async function runPrecheck(): Promise<void> {
   }
 }
 
+/** 把 ref 持有的响应式 PrecheckResult 展开成纯数据快照（Proxy 不能被 IPC 结构化克隆）。 */
+function precheckSnapshot(value: PrecheckResult | null): PrecheckResult | undefined {
+  if (!value) return undefined
+  return {
+    ip: value.ip,
+    port: value.port,
+    reachable: value.reachable,
+    latencyMs: value.latencyMs,
+    ...(value.skipped !== undefined ? { skipped: value.skipped } : {}),
+    ...(value.conclusion !== undefined ? { conclusion: value.conclusion } : {}),
+    ...(value.actions ? { actions: [...value.actions] } : {}),
+    ...(value.icmpReachable !== undefined ? { icmpReachable: value.icmpReachable } : {})
+  }
+}
+
 async function handleConnect(): Promise<void> {
   const device = props.device
   if (!device) return
@@ -231,8 +246,9 @@ async function handleConnect(): Promise<void> {
         rustdeskId: rustdeskId.value || undefined,
         clipboardSharing: clipboardSharing.value,
         driveRedirection: protocol.value === 'rdp' ? driveRedirection.value : undefined,
-        // 带上预检结果，把"端口预检"与"本次连接"串进同一条 traceId 事件链
-        precheck: precheck.value ?? undefined
+        // 带上预检结果，把"端口预检"与"本次连接"串进同一条 traceId 事件链。
+        // 必须展开成纯对象：ref 里的值是响应式 Proxy，直接传会被 IPC 结构化克隆拒绝。
+        precheck: precheckSnapshot(precheck.value)
       })
     )
     if (!result.ok) {
