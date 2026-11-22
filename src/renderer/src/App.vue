@@ -201,6 +201,7 @@ onUnmounted(() => {
               @set-os="handleSetOs($event.device, $event.osHint)"
               @start-scan="startScan"
               @goto-settings="activeTab = 'settings'"
+              @update-meta="refreshDevices"
             />
           </div>
         </el-tab-pane>

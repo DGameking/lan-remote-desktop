@@ -17,6 +17,8 @@ const devicesById = ref<Map<string, Device>>(new Map())
 const protocolFilter = ref<'' | ProtocolId>('')
 const keyword = ref('')
 const reconnectingId = ref<string | null>(null)
+/** v1.6: 每行备注的本地草稿，blur 时提交；失败则还原为 record.note。 */
+const noteDrafts = ref<Record<string, string>>({})
 
 const protocolLabels: Record<ProtocolId, string> = {
   rdp: 'RDP',
@@ -49,6 +51,29 @@ function durationText(record: SessionRecord): string {
   if (record.durationUnavailable) return '不可测'
   if (typeof record.durationSec === 'number') return `${record.durationSec}s`
   return '-'
+}
+
+/** v1.6: 刷新历史后同步备注草稿。 */
+function syncNoteDrafts(): void {
+  const next: Record<string, string> = {}
+  records.value.forEach((record) => {
+    next[record.id] = record.note ?? ''
+  })
+  noteDrafts.value = next
+}
+
+/** v1.6: 失焦保存备注；无变化跳过，失败时还原输入框。 */
+async function saveNote(record: SessionRecord): Promise<void> {
+  const value = (noteDrafts.value[record.id] ?? '').trim()
+  if (value === (record.note ?? '')) return
+  try {
+    await unwrap(api.sessionSetNote(record.id, value))
+    record.note = value
+    ElMessage.success('备注已保存')
+  } catch (error) {
+    noteDrafts.value[record.id] = record.note ?? ''
+    ElMessage.error(error instanceof Error ? error.message : String(error))
+  }
 }
 
 const filteredRecords = computed(() => {
@@ -94,6 +119,7 @@ async function reconnect(record: SessionRecord): Promise<void> {
     ElMessage.success(result.message || '已重新发起连接')
     // 刷新历史以呈现本次重连记录；失败分支保留原历史不动。
     records.value = await unwrap(api.sessionList())
+    syncNoteDrafts()
   } catch (error) {
     ElMessage.error(error instanceof Error ? error.message : String(error))
   } finally {
@@ -130,6 +156,7 @@ onMounted(async () => {
   try {
     const [list, deviceList] = await Promise.all([unwrap(api.sessionList()), unwrap(api.deviceList())])
     records.value = list
+    syncNoteDrafts()
     devicesById.value = new Map(deviceList.map((device) => [device.id, device]))
   } catch (error) {
     ElMessage.error(error instanceof Error ? error.message : String(error))
@@ -179,9 +206,21 @@ onMounted(async () => {
       <el-table-column label="结束时间" min-width="180">
         <template #default="scope">{{ formatTime((scope.row as SessionRecord).endedAt) }}</template>
       </el-table-column>
-      <el-table-column label="备注" min-width="220">
+      <el-table-column label="错误信息" min-width="180">
         <template #default="scope">
           <span class="ld-muted error-text">{{ (scope.row as SessionRecord).errorMessage || '-' }}</span>
+        </template>
+      </el-table-column>
+      <el-table-column label="备注" min-width="180">
+        <template #default="scope">
+          <el-input
+            v-model="noteDrafts[(scope.row as SessionRecord).id]"
+            size="small"
+            placeholder="添加备注，失焦保存"
+            clearable
+            maxlength="200"
+            @blur="saveNote(scope.row as SessionRecord)"
+          />
         </template>
       </el-table-column>
       <el-table-column label="操作" width="110" fixed="right">

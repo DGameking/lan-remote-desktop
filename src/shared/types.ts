@@ -71,6 +71,14 @@ export interface Device {
   osEvidence?: OsEvidence[]
   /** v1.4: 用户是否手动指定了系统；为 true 时扫描不再自动覆盖 osHint */
   osManual?: boolean
+  /** v1.6: 用户是否收藏该设备（老数据缺省 false） */
+  favorite?: boolean
+  /** v1.6: 用户是否置顶该设备（老数据缺省 false） */
+  pinned?: boolean
+  /** v1.6: 用户自定义别名/备注名（非空时 UI 优先显示） */
+  alias?: string
+  /** v1.6: 用户自定义分组名（空串表示未分组） */
+  group?: string
   source: DiscoverySource
   availableProtocols: ProtocolId[]
   /** 该 IP 上扫描发现并做过服务识别的开放端口（用于连接时自动选用真实端口） */
@@ -120,6 +128,35 @@ export interface SessionRecord {
   durationUnavailable?: boolean
   /** v1.5: 本次连接的目标 IP（本地会话元数据；设备被删除后历史仍可一键重连） */
   ip?: string
+  /** v1.6: 用户为该会话添加的备注（纯本地，不上传） */
+  note?: string
+}
+
+/** v1.6: 设备元数据更新输入（收藏/置顶/别名/分组，只改这些字段，不动扫描所得数据） */
+export interface DeviceMetaInput {
+  deviceId: string
+  favorite?: boolean
+  pinned?: boolean
+  alias?: string
+  group?: string
+}
+
+/** v1.6: 导入导出的数据包结构。刻意不含 credentials —— 凭据是 DPAPI 绑定本机本用户的密文，导出无意义且泄露风险高。 */
+export interface ExportData {
+  format: 'landesk-backup'
+  version: 1
+  exportedAt: string
+  devices: Device[]
+  settings: AppSettings
+}
+
+/** v1.6: 导入结果与冲突提示 */
+export interface ImportResult {
+  added: number
+  updated: number
+  skipped: number
+  /** 设置是否随包导入（用户可选择只导入设备） */
+  settingsImported: boolean
 }
 
 /** 应用设置 */
@@ -140,6 +177,14 @@ export interface AppSettings {
   driveRedirection: boolean
   /** 常用 SMB 共享名，文件传输时作为默认子路径（留空则打开 \\IP 根目录） */
   defaultShareName: string
+  /** v1.6: RDP 默认显示模式：跟随会话自适应 / 全屏 */
+  rdpScreenMode: 'adaptive' | 'fullscreen'
+  /** v1.6: RDP 默认分辨率宽度（0=跟随本地窗口） */
+  rdpWidth: number
+  /** v1.6: RDP 默认分辨率高度（0=跟随本地窗口） */
+  rdpHeight: number
+  /** v1.6: RDP 是否默认开启打印机重定向 */
+  rdpPrinterRedirection: boolean
 }
 
 /** 统一 IPC 响应包装 */
@@ -184,7 +229,8 @@ export interface ConnectRequest {
   username?: string
   password?: string
   rustdeskId?: string
-  screenMode?: 'fullscreen' | 'window'
+  /** 显示模式：adaptive=自适应会话尺寸（3 号），fullscreen=强制全屏（2 号），window=窗口（兼容旧值） */
+  screenMode?: 'adaptive' | 'fullscreen' | 'window'
   useCmdkey?: boolean
   /** 本次会话是否共享剪贴板（不传则沿用全局设置） */
   clipboardSharing?: boolean
@@ -192,6 +238,11 @@ export interface ConnectRequest {
   driveRedirection?: boolean
   /** 连接前端口预检结果（由渲染层带入，用于把预检与本次连接串进同一条事件链） */
   precheck?: PrecheckResult
+  /** v1.6: 本次 RDP 会话的分辨率预设（0/不传则沿用会话自适应） */
+  width?: number
+  height?: number
+  /** v1.6: 本次 RDP 会话是否开启打印机重定向（不传则沿用全局设置） */
+  printerRedirection?: boolean
 }
 
 /** 连接结果 */
@@ -298,7 +349,15 @@ export const IPC_CHANNELS = {
   SERVER_OPEN: 'server:open',
   DEVICE_WAKE: 'device:wake',
   SETTINGS_GET: 'settings:get',
-  SETTINGS_SET: 'settings:set'
+  SETTINGS_SET: 'settings:set',
+  /** v1.6: 设备元数据（收藏/别名/分组）更新 */
+  DEVICE_UPDATE_META: 'device:updateMeta',
+  /** v1.6: 会话备注更新 */
+  SESSION_SET_NOTE: 'session:setNote',
+  /** v1.6: 导出设备列表与设置为 JSON 文件（不含凭据） */
+  DATA_EXPORT: 'data:export',
+  /** v1.6: 从 JSON 文件导入设备列表与设置（不含凭据） */
+  DATA_IMPORT: 'data:import'
 } as const
 
 /** 默认设置（单一来源，避免两端各写一份） */
@@ -310,7 +369,11 @@ export const DEFAULT_SETTINGS: AppSettings = {
   telemetryConsent: false,
   clipboardSharing: true,
   driveRedirection: false,
-  defaultShareName: ''
+  defaultShareName: '',
+  rdpScreenMode: 'adaptive',
+  rdpWidth: 0,
+  rdpHeight: 0,
+  rdpPrinterRedirection: false
 }
 
 /**
@@ -606,4 +669,12 @@ export interface ElectronAPI {
   deviceWake: (target: WakeTarget) => Promise<IpcResponse<WakeResult>>
   settingsGet: () => Promise<IpcResponse<AppSettings>>
   settingsSet: (patch: Partial<AppSettings>) => Promise<IpcResponse<AppSettings>>
+  /** v1.6: 更新设备元数据（收藏/置顶/别名/分组） */
+  deviceUpdateMeta: (input: DeviceMetaInput) => Promise<IpcResponse<Device>>
+  /** v1.6: 更新会话备注 */
+  sessionSetNote: (sessionId: string, note: string) => Promise<IpcResponse<boolean>>
+  /** v1.6: 导出数据到用户选择的 JSON 文件；返回保存路径，取消返回 code!=0 */
+  dataExport: () => Promise<IpcResponse<string>>
+  /** v1.6: 从用户选择的 JSON 文件导入；返回导入统计 */
+  dataImport: (includeSettings: boolean) => Promise<IpcResponse<ImportResult>>
 }

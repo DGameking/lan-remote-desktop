@@ -42,7 +42,12 @@ const api: ElectronAPI = {
   serverOpen: (target) => ipcRenderer.invoke(IPC_CHANNELS.SERVER_OPEN, toPlain(target)),
   deviceWake: (target) => ipcRenderer.invoke(IPC_CHANNELS.DEVICE_WAKE, toPlain(target)),
   settingsGet: () => ipcRenderer.invoke(IPC_CHANNELS.SETTINGS_GET),
-  settingsSet: (patch) => ipcRenderer.invoke(IPC_CHANNELS.SETTINGS_SET, toPlain(patch))
+  settingsSet: (patch) => ipcRenderer.invoke(IPC_CHANNELS.SETTINGS_SET, toPlain(patch)),
+  deviceUpdateMeta: (input) => ipcRenderer.invoke(IPC_CHANNELS.DEVICE_UPDATE_META, toPlain(input)),
+  sessionSetNote: (sessionId, note) =>
+    ipcRenderer.invoke(IPC_CHANNELS.SESSION_SET_NOTE, sessionId, note),
+  dataExport: () => ipcRenderer.invoke(IPC_CHANNELS.DATA_EXPORT),
+  dataImport: (includeSettings) => ipcRenderer.invoke(IPC_CHANNELS.DATA_IMPORT, includeSettings)
 }
 
 contextBridge.exposeInMainWorld('electronAPI', api)

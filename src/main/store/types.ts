@@ -21,6 +21,12 @@ export interface DeviceRow {
   osEvidence: string
   /** v1.4: 是否手动指定系统；老库缺省 0 */
   osManual: number
+  /** v1.6: 收藏/置顶（老库缺省 0） */
+  favorite: number
+  pinned: number
+  /** v1.6: 用户别名与分组（老库缺省空串） */
+  alias: string
+  group: string
   source: DiscoverySource
   availableProtocols: string
   detectedPorts: string
@@ -57,6 +63,8 @@ export interface SessionRow {
   durationUnavailable?: boolean
   /** v1.5: 本次连接的目标 IP（本地元数据，设备删除后历史仍可一键重连） */
   ip?: string
+  /** v1.6: 会话备注（纯本地） */
+  note?: string
 }
 
 /**
@@ -78,18 +86,21 @@ export function normalizeSessionRow(row: SessionRow): SessionRow {
   const rawUnavailable = row.durationUnavailable as boolean | number | undefined
   const durationUnavailable = rawUnavailable === true || rawUnavailable === 1
   const ip = typeof row.ip === 'string' && row.ip ? row.ip : undefined
+  const note = typeof row.note === 'string' && row.note ? row.note : undefined
   // 先剔除旧值，再按规范条件写回，避免把 0/1 原样透传给 UI
   const base: SessionRow = { ...row }
   delete base.externalPid
   delete base.durationSec
   delete base.durationUnavailable
   delete base.ip
+  delete base.note
   return {
     ...base,
     ...(externalPid !== undefined ? { externalPid } : {}),
     ...(durationSec !== undefined ? { durationSec } : {}),
     ...(durationUnavailable ? { durationUnavailable: true } : {}),
-    ...(ip !== undefined ? { ip } : {})
+    ...(ip !== undefined ? { ip } : {}),
+    ...(note !== undefined ? { note } : {})
   }
 }
 
@@ -99,6 +110,8 @@ export interface Store {
   listDevices(): DeviceRow[]
   upsertDevice(row: DeviceRow): void
   deleteDevice(id: string): void
+  /** v1.6: 原地更新设备元数据（收藏/置顶/别名/分组），不覆盖扫描所得字段 */
+  updateDeviceMeta(id: string, patch: Partial<Pick<DeviceRow, 'favorite' | 'pinned' | 'alias' | 'group'>>): DeviceRow | undefined
   listCredentials(): CredentialRow[]
   setCredential(row: CredentialRow): void
   deleteCredential(id: string): void
@@ -107,7 +120,11 @@ export interface Store {
   updateSession(row: SessionRow): void
   /** v1.5-P0-3: 清空连接历史（对应 REQ-009） */
   clearSessions(): void
+  /** v1.6: 更新会话备注 */
+  setSessionNote(id: string, note: string): boolean
   getSetting(key: string): string | undefined
+  /** v1.6: 导出用——列出全部设置键值对 */
+  listSettings(): Record<string, string>
   setSetting(key: string, value: string): void
 }
 
@@ -125,6 +142,10 @@ export function deviceToRow(device: Device): DeviceRow {
     osConfidence: device.osConfidence ?? 'none',
     osEvidence: JSON.stringify(device.osEvidence ?? []),
     osManual: device.osManual ? 1 : 0,
+    favorite: device.favorite ? 1 : 0,
+    pinned: device.pinned ? 1 : 0,
+    alias: device.alias ?? '',
+    group: device.group ?? '',
     source: device.source,
     availableProtocols: JSON.stringify(device.availableProtocols),
     detectedPorts: JSON.stringify(device.detectedPorts ?? []),
@@ -192,6 +213,10 @@ export function rowToDevice(row: DeviceRow): Device {
     osConfidence: confidence,
     osEvidence,
     osManual: row.osManual === 1,
+    favorite: row.favorite === 1,
+    pinned: row.pinned === 1,
+    alias: typeof row.alias === 'string' && row.alias ? row.alias : undefined,
+    group: typeof row.group === 'string' && row.group ? row.group : undefined,
     source: row.source,
     availableProtocols: protocols,
     detectedPorts,

@@ -50,9 +50,9 @@ CI 中调用 `npm run dist -- --x64` 显式指定架构；本地打包请保持 
 ## 7. 验证状态（2026-11-22 v1.5.0 全量通过）
 - `npm run typecheck` ✓（主进程）
 - `npm run typecheck:vue` ✓（渲染层）
-- `npm run test:unit` ✓ **330/330（24 个测试文件）**；v1.3 基线 169 → v1.4 218 → v1.5 首轮 301 → 发布前修复 321 → v1.5.1 IPC 净化 330
+- `npm run test:unit` ✓ **350/350（26 个测试文件）**；v1.3 基线 169 → v1.4 218 → v1.5 首轮 301 → 发布前修复 321 → v1.5.1 IPC 净化 330 → v1.6 设备管理 350
 - `npm run build` ✓（main / preload / renderer 三进程）
 - `npm run dist -- --x64 --publish never` ✓（electron 45.4.1）
 - 独立审校：v1.4 全面审校发现 5 项 P0，v1.5 全部清零；发布前复核又发现并修复 3 处缺陷（ping 离线误判、rdp 临时文件清理未兑现承诺、failed 会话被误改写），见 `docs/14`、`RELEASE_NOTES`。
-- 产物：`dist/LanDesk-1.5.1-setup-x64.exe`、`dist/LanDesk-1.5.1-portable-win-x64.exe`、`dist/SHA256SUMS.txt`（v1.5.1 重新打包后生成）。
+- 产物：`dist/LanDesk-1.6.0-setup-x64.exe`、`dist/LanDesk-1.6.0-portable-win-x64.exe`、`dist/SHA256SUMS.txt`（v1.6 重新打包后生成）。
 - v1.5.1 补丁：修复 IPC 传响应式 Proxy 导致的 `An object could not be cloned`，新增 `src/shared/ipc-sanitize.ts` 与 `tests/ipc-sanitize.test.ts`。

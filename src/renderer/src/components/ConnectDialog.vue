@@ -34,6 +34,12 @@ const remember = ref(true)
 const rustdeskId = ref('')
 const clipboardSharing = ref(true)
 const driveRedirection = ref(false)
+// v1.6: RDP 连接预设（基本类型，可直接跨 IPC 传递）
+const rdpScreenMode = ref<'adaptive' | 'fullscreen'>('adaptive')
+const rdpWidth = ref(0)
+const rdpHeight = ref(0)
+const rdpPrinterRedirection = ref(false)
+const activePreset = ref<string[]>([])
 const agreed = ref(false)
 const connecting = ref(false)
 const prechecking = ref(false)
@@ -175,6 +181,11 @@ async function loadDefaultsAndPrecheck(): Promise<void> {
     clipboardSharing.value = settings.clipboardSharing
     driveRedirection.value = settings.driveRedirection
     agreed.value = settings.complianceAccepted
+    // v1.6: 从全局设置回填 RDP 预设；老数据缺字段时回退安全默认值。
+    rdpScreenMode.value = settings.rdpScreenMode ?? 'adaptive'
+    rdpWidth.value = settings.rdpWidth ?? 0
+    rdpHeight.value = settings.rdpHeight ?? 0
+    rdpPrinterRedirection.value = settings.rdpPrinterRedirection ?? false
     if (props.device && protocol.value !== 'rustdesk') {
       await runPrecheck()
     }
@@ -246,6 +257,15 @@ async function handleConnect(): Promise<void> {
         rustdeskId: rustdeskId.value || undefined,
         clipboardSharing: clipboardSharing.value,
         driveRedirection: protocol.value === 'rdp' ? driveRedirection.value : undefined,
+        // v1.6: RDP 连接预设（仅 RDP 生效；均为基本类型，无 Proxy 克隆问题）。
+        ...(protocol.value === 'rdp'
+          ? {
+              screenMode: rdpScreenMode.value,
+              width: rdpWidth.value,
+              height: rdpHeight.value,
+              printerRedirection: rdpPrinterRedirection.value
+            }
+          : {}),
         // 带上预检结果，把"端口预检"与"本次连接"串进同一条 traceId 事件链。
         // 必须展开成纯对象：ref 里的值是响应式 Proxy，直接传会被 IPC 结构化克隆拒绝。
         precheck: precheckSnapshot(precheck.value)
@@ -419,6 +439,45 @@ async function handleConnect(): Promise<void> {
           注意：磁盘重定向开启后，被控端可访问你本机映射的磁盘。仅对可信设备开启。
         </p>
       </div>
+
+      <!-- v1.6: RDP 连接预设（仅 RDP 协议显示），默认值来自全局设置 -->
+      <el-collapse v-if="protocol === 'rdp'" v-model="activePreset" class="preset-collapse">
+        <el-collapse-item title="连接预设（显示模式 / 分辨率 / 打印机）" name="preset">
+          <div class="field">
+            <label>显示模式</label>
+            <el-select v-model="rdpScreenMode" style="width: 100%">
+              <el-option label="自适应（跟随会话尺寸）" value="adaptive" />
+              <el-option label="全屏" value="fullscreen" />
+            </el-select>
+          </div>
+          <div class="field-grid">
+            <div class="field">
+              <label>分辨率宽度（0=跟随窗口）</label>
+              <el-input-number
+                v-model="rdpWidth"
+                :min="0"
+                :max="7680"
+                controls-position="right"
+                style="width: 100%"
+              />
+            </div>
+            <div class="field">
+              <label>分辨率高度（0=跟随窗口）</label>
+              <el-input-number
+                v-model="rdpHeight"
+                :min="0"
+                :max="4320"
+                controls-position="right"
+                style="width: 100%"
+              />
+            </div>
+          </div>
+          <div class="switch-row">
+            <el-switch v-model="rdpPrinterRedirection" size="small" />
+            <span>打印机重定向（把本机打印机映射进远程会话）</span>
+          </div>
+        </el-collapse-item>
+      </el-collapse>
 
       <div class="notice">
         <p v-if="protocol === 'rdp'">
@@ -636,6 +695,19 @@ async function handleConnect(): Promise<void> {
 }
 .text-online {
   color: var(--ld-success);
+}
+.preset-collapse {
+  border: 1px solid var(--ld-border);
+  border-radius: 8px;
+}
+.preset-collapse :deep(.el-collapse-item__content) {
+  padding-bottom: 4px;
+}
+.switch-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
 }
 .troubleshoot-box {
   border: 1px solid var(--ld-border);

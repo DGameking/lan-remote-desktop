@@ -1,11 +1,15 @@
 import { randomUUID } from 'node:crypto'
-import { app, ipcMain, shell, type BrowserWindow } from 'electron'
+import fs from 'node:fs'
+import path from 'node:path'
+import { app, dialog, ipcMain, shell, type BrowserWindow } from 'electron'
 import {
   IPC_CHANNELS,
   PROTOCOL_PRECHECK_PORT,
   type AppStatus,
   type CredentialView,
+  type ExportData,
   type IpcResponse,
+  type ImportResult,
   type ServerLinkResult,
   type SubnetView,
   type WakeResult
@@ -28,7 +32,15 @@ import { getAvailability, isProtocolId } from '../protocols/registry'
 import { buildManageUrl } from '../protocols/serverlink'
 import type { SessionManager } from '../session/manager'
 import { encryptPassword } from '../store/crypto'
-import { deviceToRow, getSettings, getStore, now, rowToDevice, saveSettings } from '../store'
+import {
+  deviceToRow,
+  getSettings,
+  getStore,
+  now,
+  rowToDevice,
+  saveSettings,
+  type DeviceRow
+} from '../store'
 import {
   fail,
   isValidIp,
@@ -36,10 +48,13 @@ import {
   validateConnectRequest,
   validateCredentialInput,
   validateDevice,
+  validateDeviceMetaInput,
+  validateExportData,
   validateFileTransferTarget,
   validateId,
   validateLogQuery,
   validateServerLinkTarget,
+  validateSessionNote,
   validateSettingsPatch,
   validateTargetCidr,
   validateDeviceSetOs,
@@ -417,6 +432,135 @@ export function registerIpc(
       return errorResponse('settings:set', error)
     }
   })
+
+  // v1.6: 设备元数据更新（收藏/置顶/别名/分组），原地写入，不触碰扫描所得字段。
+  ipcMain.handle(IPC_CHANNELS.DEVICE_UPDATE_META, async (_event, payload: unknown): Promise<IpcResponse> => {
+    try {
+      const input = validateDeviceMetaInput(payload)
+      const patch: Partial<Pick<DeviceRow, 'favorite' | 'pinned' | 'alias' | 'group'>> = {}
+      if (input.favorite !== undefined) patch.favorite = input.favorite ? 1 : 0
+      if (input.pinned !== undefined) patch.pinned = input.pinned ? 1 : 0
+      if (input.alias !== undefined) patch.alias = input.alias
+      if (input.group !== undefined) patch.group = input.group
+      const row = getStore().updateDeviceMeta(input.deviceId, patch)
+      if (!row) return fail('设备不存在，请先扫描或手动添加')
+      logger.info('设备元数据已更新', { fields: Object.keys(patch) })
+      return ok(rowToDevice(row), '设备信息已更新')
+    } catch (error) {
+      return errorResponse('device:updateMeta', error)
+    }
+  })
+
+  // v1.6: 会话备注更新（纯本地）。
+  ipcMain.handle(
+    IPC_CHANNELS.SESSION_SET_NOTE,
+    async (_event, sessionId: unknown, note: unknown): Promise<IpcResponse> => {
+      try {
+        const input = validateSessionNote(sessionId, note)
+        if (!getStore().setSessionNote(input.id, input.note)) return fail('会话记录不存在或已清空')
+        return ok(true, '会话备注已保存')
+      } catch (error) {
+        return errorResponse('session:setNote', error)
+      }
+    }
+  )
+
+  // v1.6: 导出设备与设置为本机 JSON 文件。
+  // 安全边界：绝不导出 credentials —— 其密文由 DPAPI 绑定本机本用户，换机无法解密且泄露风险高。
+  ipcMain.handle(IPC_CHANNELS.DATA_EXPORT, async (): Promise<IpcResponse> => {
+    try {
+      const stamp = new Date().toISOString().slice(0, 10).replace(/-/g, '')
+      const { canceled, filePath } = await dialog.showSaveDialog({
+        title: '导出 LanDesk 数据',
+        defaultPath: `landesk-backup-${stamp}.json`,
+        filters: [{ name: 'JSON', extensions: ['json'] }]
+      })
+      if (canceled || !filePath) return fail('已取消导出')
+      const data: ExportData = {
+        format: 'landesk-backup',
+        version: 1,
+        exportedAt: new Date().toISOString(),
+        devices: getStore().listDevices().map(rowToDevice),
+        settings: getSettings()
+      }
+      fs.writeFileSync(filePath, JSON.stringify(data, null, 2), 'utf8')
+      logger.info('数据已导出', { deviceCount: data.devices.length })
+      return ok(filePath, '数据已导出到本机（不含凭据）')
+    } catch (error) {
+      return errorResponse('data:export', error)
+    }
+  })
+
+  // v1.6: 从用户选择的 JSON 导入。文件内容一律视为不可信数据：只做白名单解析与字段校验，
+  // 绝不执行其中任何路径/命令，也不读取凭据字段。
+  ipcMain.handle(
+    IPC_CHANNELS.DATA_IMPORT,
+    async (_event, includeSettings: unknown): Promise<IpcResponse> => {
+      try {
+        const { canceled, filePaths } = await dialog.showOpenDialog({
+          title: '导入 LanDesk 数据',
+          properties: ['openFile'],
+          filters: [{ name: 'JSON', extensions: ['json'] }]
+        })
+        if (canceled || filePaths.length === 0) return fail('已取消导入')
+        const file = filePaths[0]
+        if (!file || path.extname(file).toLowerCase() !== '.json') {
+          throw new Error('仅支持导入 .json 备份文件')
+        }
+        // JSON.parse 只产生纯数据；随后经 validateExportData 白名单校验后才使用。
+        const parsed: unknown = JSON.parse(fs.readFileSync(file, 'utf8'))
+        const imported = validateExportData(parsed)
+        const store = getStore()
+        const existing = store.listDevices()
+        const existingById = new Map(existing.map((item) => [item.id, item]))
+        const existingByIp = new Map(existing.map((item) => [item.ip, item]))
+        const seenIds = new Set<string>()
+        const seenIps = new Set<string>()
+        let added = 0
+        let updated = 0
+        let skipped = 0
+        for (const device of imported.devices) {
+          const row = deviceToRow(device)
+          // 备份包内部重复：直接跳过，避免重复计数或覆盖。
+          if (seenIds.has(row.id) || seenIps.has(row.ip)) {
+            skipped++
+            continue
+          }
+          seenIds.add(row.id)
+          seenIps.add(row.ip)
+          const dup = existingById.get(row.id) ?? existingByIp.get(row.ip)
+          if (dup) {
+            // 本地已存在：保留用户本地的收藏/置顶/别名/分组与创建时间，仅更新扫描所得字段。
+            store.upsertDevice({
+              ...row,
+              id: dup.id,
+              favorite: dup.favorite,
+              pinned: dup.pinned,
+              alias: dup.alias,
+              group: dup.group,
+              createdAt: dup.createdAt,
+              updatedAt: now()
+            })
+            updated++
+          } else {
+            store.upsertDevice(row)
+            added++
+          }
+        }
+        let settingsImported = false
+        if (includeSettings === true) {
+          // telemetryConsent 由 saveSettings/getSettings 统一强制为 false，无需在此处理。
+          saveSettings(imported.settings)
+          settingsImported = true
+        }
+        const result: ImportResult = { added, updated, skipped, settingsImported }
+        logger.info('数据导入完成', { added, updated, skipped, settingsImported })
+        return ok(result, `导入完成：新增 ${added}，更新 ${updated}，跳过 ${skipped}`)
+      } catch (error) {
+        return errorResponse('data:import', error)
+      }
+    }
+  )
 
   // 扫描进度由主进程主动推送，使用独立事件通道；同时缓存最近一次扫描统计供诊断快照使用
   scanManager.setOnProgress((progress) => {

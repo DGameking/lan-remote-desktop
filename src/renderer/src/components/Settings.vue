@@ -15,7 +15,11 @@ const settings = ref<AppSettings>({
   telemetryConsent: false,
   clipboardSharing: true,
   driveRedirection: false,
-  defaultShareName: ''
+  defaultShareName: '',
+  rdpScreenMode: 'adaptive',
+  rdpWidth: 0,
+  rdpHeight: 0,
+  rdpPrinterRedirection: false
 })
 const vncPath = ref('')
 const rustdeskPath = ref('')
@@ -25,6 +29,10 @@ const manualName = ref('')
 const credentials = ref<CredentialView[]>([])
 const devices = ref<Device[]>([])
 const saving = ref(false)
+// v1.6: 数据备份
+const includeSettings = ref(false)
+const exporting = ref(false)
+const importing = ref(false)
 
 const protocolLabels: Record<ProtocolId, string> = {
   rdp: 'RDP',
@@ -79,6 +87,46 @@ async function saveSettings(): Promise<void> {
     ElMessage.error(error instanceof Error ? error.message : String(error))
   } finally {
     saving.value = false
+  }
+}
+
+/** v1.6: RDP 预设改动即保存（按字段 patch，沿用 settingsSet 合并语义）。 */
+async function saveRdpPatch(patch: Partial<AppSettings>): Promise<void> {
+  try {
+    settings.value = await unwrap(api.settingsSet(patch))
+    emit('changed')
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : String(error))
+  }
+}
+
+/** v1.6: 导出设备与设置到用户选择的 JSON 文件（不含凭据）。 */
+async function exportData(): Promise<void> {
+  exporting.value = true
+  try {
+    const path = await unwrap(api.dataExport())
+    ElMessage.success('已导出到 ' + path)
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : String(error))
+  } finally {
+    exporting.value = false
+  }
+}
+
+/** v1.6: 从用户选择的 JSON 文件导入，可只导入设备不带设置。 */
+async function importData(): Promise<void> {
+  importing.value = true
+  try {
+    const result = await unwrap(api.dataImport(includeSettings.value))
+    ElMessage.success(
+      `导入完成：新增 ${result.added} 项，更新 ${result.updated} 项，跳过 ${result.skipped} 项`
+    )
+    emit('changed')
+    await load()
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : String(error))
+  } finally {
+    importing.value = false
   }
 }
 
@@ -189,6 +237,54 @@ async function resetCompliance(): Promise<void> {
     </section>
 
     <section class="ld-panel">
+      <h2>RDP 连接预设</h2>
+      <p class="ld-muted section-hint">新建 RDP 连接的默认画面参数，可在连接对话框内临时调整；改动即时保存。</p>
+      <div class="field">
+        <label>显示模式</label>
+        <el-select
+          :model-value="settings.rdpScreenMode"
+          placeholder="自适应"
+          style="width: 100%"
+          @update:model-value="saveRdpPatch({ rdpScreenMode: $event as AppSettings['rdpScreenMode'] })"
+        >
+          <el-option label="自适应（跟随会话尺寸）" value="adaptive" />
+          <el-option label="全屏" value="fullscreen" />
+        </el-select>
+      </div>
+      <div class="field-grid">
+        <div class="field">
+          <label>分辨率宽度（0=跟随窗口）</label>
+          <el-input-number
+            :model-value="settings.rdpWidth"
+            :min="0"
+            :max="7680"
+            controls-position="right"
+            style="width: 100%"
+            @change="saveRdpPatch({ rdpWidth: $event ?? 0 })"
+          />
+        </div>
+        <div class="field">
+          <label>分辨率高度（0=跟随窗口）</label>
+          <el-input-number
+            :model-value="settings.rdpHeight"
+            :min="0"
+            :max="4320"
+            controls-position="right"
+            style="width: 100%"
+            @change="saveRdpPatch({ rdpHeight: $event ?? 0 })"
+          />
+        </div>
+      </div>
+      <div class="switch-row">
+        <el-switch
+          :model-value="settings.rdpPrinterRedirection"
+          @change="saveRdpPatch({ rdpPrinterRedirection: $event as boolean })"
+        />
+        <span>默认开启打印机重定向（把本机打印机映射进远程会话）</span>
+      </div>
+    </section>
+
+    <section class="ld-panel">
       <h2>手动添加设备</h2>
       <p class="ld-muted section-hint">多网卡 / AP 隔离导致扫描失败时，可直接输入 IP 添加。</p>
       <div class="field">
@@ -244,6 +340,22 @@ async function resetCompliance(): Promise<void> {
     </section>
 
     <section class="ld-panel wide">
+      <h2>数据备份（导入 / 导出）</h2>
+      <p class="ld-muted section-hint">
+        导出设备列表与设置到 JSON 文件，便于迁移或备份。凭据不会导出/导入（DPAPI 绑定本机本用户，密文在别处无法解密）。
+      </p>
+      <div class="backup-row">
+        <el-button :loading="exporting" @click="exportData">导出设备与设置</el-button>
+        <div class="backup-import">
+          <el-switch v-model="includeSettings" />
+          <span>同时导入设置（关闭则只导入设备）</span>
+        </div>
+        <el-button :loading="importing" @click="importData">导入设备与设置</el-button>
+      </div>
+      <p class="ld-muted backup-note">导入时按设备 ID 合并：新设备新增，已存在设备更新，非法或冲突记录跳过；统计结果会在导入完成后显示。</p>
+    </section>
+
+    <section class="ld-panel wide">
       <h2>运行状态与诊断</h2>
       <p class="ld-muted section-hint">查看软件运行状态、检索本机日志；导出诊断包后可复制脱敏文本交给 AI 排查问题。所有数据仅留本机，零遥测。</p>
       <Diagnostics />
@@ -270,6 +382,27 @@ h2 {
 }
 .field {
   margin-bottom: 14px;
+}
+.field-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+.backup-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 14px;
+}
+.backup-import {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+}
+.backup-note {
+  font-size: 12px;
+  margin: 12px 0 0;
 }
 .field label {
   display: block;

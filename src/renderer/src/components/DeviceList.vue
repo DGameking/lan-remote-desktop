@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { computed, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { api, unwrap } from '../api'
 import type { Device, OsConfidence, OsHint, ProtocolId } from '../../../shared/types'
@@ -12,9 +12,15 @@ const emit = defineEmits<{
   (e: 'set-os', payload: { device: Device; osHint: OsHint }): void
   (e: 'startScan'): void
   (e: 'gotoSettings'): void
+  (e: 'updateMeta'): void
 }>()
 
 const viewMode = ref<'card' | 'table'>('card')
+
+// v1.6: 本地搜索 / 排序 / 分组筛选（纯前端，不触发扫描或 IPC）
+const searchQuery = ref('')
+const sortBy = ref<'default' | 'name' | 'ip' | 'recent'>('default')
+const groupFilter = ref('')
 
 const osLabels: Record<OsHint, string> = {
   windows: 'Windows',
@@ -64,8 +70,114 @@ function recommend(device: Device): ProtocolId {
   return device.availableProtocols[0] ?? (device.osHint === 'windows' ? 'rdp' : 'vnc')
 }
 
+/** v1.6: 有别名时优先显示别名，括号保留原名/扫描名，避免用户丢失来源信息。 */
 function displayName(device: Device): string {
-  return device.name || device.ip
+  const base = device.name || device.ip
+  const alias = (device.alias ?? '').trim()
+  return alias ? `${alias}（${base}）` : base
+}
+
+/** IP 按数值段比较，避免字符串排序把 192.168.1.100 排在 .20 之前。 */
+function ipCompare(a: string, b: string): number {
+  const pa = a.split('.').map(Number)
+  const pb = b.split('.').map(Number)
+  for (let i = 0; i < 4; i++) {
+    const diff = (pa[i] || 0) - (pb[i] || 0)
+    if (diff !== 0) return diff
+  }
+  return 0
+}
+
+/** 从所有设备的 group 去重生成筛选下拉选项（含空分组则忽略）。 */
+const groupOptions = computed<string[]>(() => {
+  const set = new Set<string>()
+  props.devices.forEach((device) => {
+    const group = (device.group ?? '').trim()
+    if (group) set.add(group)
+  })
+  return Array.from(set).sort((a, b) => a.localeCompare(b, 'zh-CN'))
+})
+
+/** 过滤 + 排序：置顶优先 → 收藏优先 → 所选排序规则，全部本地 computed。 */
+const visibleDevices = computed<Device[]>(() => {
+  const kw = searchQuery.value.trim().toLowerCase()
+  const group = groupFilter.value
+  const list = props.devices.filter((device) => {
+    if (group && (device.group ?? '').trim() !== group) return false
+    if (!kw) return true
+    return [device.name, device.ip, device.alias, device.group].some((field) =>
+      (field ?? '').toLowerCase().includes(kw)
+    )
+  })
+  return [...list].sort((a, b) => {
+    if (!!a.pinned !== !!b.pinned) return a.pinned ? -1 : 1
+    if (!!a.favorite !== !!b.favorite) return a.favorite ? -1 : 1
+    switch (sortBy.value) {
+      case 'name':
+        return displayName(a).localeCompare(displayName(b), 'zh-CN')
+      case 'ip':
+        return ipCompare(a.ip, b.ip)
+      case 'recent':
+        return new Date(b.lastSeenAt).getTime() - new Date(a.lastSeenAt).getTime()
+      default:
+        return 0
+    }
+  })
+})
+
+/** v1.6: 切换收藏/置顶；成功后让父组件刷新设备列表以持久化视图。 */
+async function updateMeta(
+  device: Device,
+  patch: { favorite?: boolean; pinned?: boolean; alias?: string; group?: string },
+  successMessage: string
+): Promise<void> {
+  try {
+    await unwrap(api.deviceUpdateMeta({ deviceId: device.id, ...patch }))
+    ElMessage.success(successMessage)
+    emit('updateMeta')
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : String(error))
+  }
+}
+
+function toggleFavorite(device: Device): void {
+  void updateMeta(device, { favorite: !device.favorite }, device.favorite ? '已取消收藏' : '已收藏')
+}
+
+function togglePinned(device: Device): void {
+  void updateMeta(device, { pinned: !device.pinned }, device.pinned ? '已取消置顶' : '已置顶')
+}
+
+// 别名/分组编辑小表单
+const editVisible = ref(false)
+const editTarget = ref<Device | null>(null)
+const editAlias = ref('')
+const editGroup = ref('')
+
+function openEdit(device: Device): void {
+  editTarget.value = device
+  editAlias.value = device.alias ?? ''
+  editGroup.value = device.group ?? ''
+  editVisible.value = true
+}
+
+async function submitEdit(): Promise<void> {
+  const target = editTarget.value
+  if (!target) return
+  try {
+    await unwrap(
+      api.deviceUpdateMeta({
+        deviceId: target.id,
+        alias: editAlias.value.trim(),
+        group: editGroup.value.trim()
+      })
+    )
+    ElMessage.success('设备别名/分组已更新')
+    editVisible.value = false
+    emit('updateMeta')
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : String(error))
+  }
 }
 
 function formatTime(value: string): string {
@@ -128,6 +240,28 @@ async function wakeDevice(device: Device): Promise<void> {
       </div>
     </div>
 
+    <!-- v1.6: 本地搜索 / 排序 / 分组筛选，不触发 IPC -->
+    <div v-if="props.devices.length > 0" class="list-toolbar">
+      <el-input
+        v-model="searchQuery"
+        size="small"
+        clearable
+        placeholder="搜索名称 / IP / 别名 / 分组"
+        style="width: 230px"
+      />
+      <el-select v-model="sortBy" size="small" style="width: 130px">
+        <el-option label="默认排序" value="default" />
+        <el-option label="按名称" value="name" />
+        <el-option label="按 IP" value="ip" />
+        <el-option label="按最近发现" value="recent" />
+      </el-select>
+      <el-select v-model="groupFilter" size="small" style="width: 150px" placeholder="全部分组">
+        <el-option label="全部分组" value="" />
+        <el-option v-for="group in groupOptions" :key="group" :label="group" :value="group" />
+      </el-select>
+      <span class="ld-muted toolbar-count">显示 {{ visibleDevices.length }} / {{ props.devices.length }}</span>
+    </div>
+
     <el-empty v-if="!props.loading && props.devices.length === 0" description="暂无设备，先扫描局域网或在设置中手动添加 IP">
       <div class="empty-actions">
         <el-button type="primary" @click="emit('startScan')">开始扫描</el-button>
@@ -147,8 +281,12 @@ async function wakeDevice(device: Device): Promise<void> {
       </div>
     </el-empty>
 
+    <div v-else-if="props.devices.length > 0 && visibleDevices.length === 0" class="filter-empty ld-muted">
+      没有匹配的设备，试试调整搜索词或分组筛选。
+    </div>
+
     <div v-else-if="viewMode === 'card'" class="card-grid">
-      <article v-for="device in props.devices" :key="device.id" class="device-card">
+      <article v-for="device in visibleDevices" :key="device.id" class="device-card">
         <div class="card-top">
           <div class="device-title">
             <span class="status-dot" :class="{ online: device.online }" />
@@ -177,12 +315,23 @@ async function wakeDevice(device: Device): Promise<void> {
             </template>
           </el-dropdown>
         </div>
+        <!-- v1.6: 收藏 / 置顶 / 别名分组 -->
+        <div class="meta-actions">
+          <el-button link size="small" :type="device.favorite ? 'warning' : 'info'" @click="toggleFavorite(device)">
+            {{ device.favorite ? '★ 已收藏' : '☆ 收藏' }}
+          </el-button>
+          <el-button link size="small" :type="device.pinned ? 'primary' : 'info'" @click="togglePinned(device)">
+            {{ device.pinned ? '已置顶' : '置顶' }}
+          </el-button>
+          <el-button link size="small" @click="openEdit(device)">别名/分组</el-button>
+        </div>
         <div class="device-ip">{{ device.ip }}</div>
         <div class="device-meta ld-muted">
           <span>{{ device.online ? '在线' : '离线/未扫描到' }}</span>
           <span>·</span>
           <span>来源 {{ device.source }}</span>
           <span v-if="device.mac">· {{ device.mac }}</span>
+          <el-tag v-if="device.group" size="small" type="info" effect="plain" class="group-tag">{{ device.group }}</el-tag>
         </div>
         <div class="protocol-row">
           <span
@@ -227,8 +376,18 @@ async function wakeDevice(device: Device): Promise<void> {
       </article>
     </div>
 
-    <el-table v-else :data="props.devices" stripe style="width: 100%" max-height="460">
-      <el-table-column prop="name" label="设备名" min-width="140" />
+    <el-table v-else :data="visibleDevices" stripe style="width: 100%" max-height="460">
+      <el-table-column label="设备名" min-width="140">
+        <template #default="scope">{{ displayName(scope.row as Device) }}</template>
+      </el-table-column>
+      <el-table-column label="分组" width="100">
+        <template #default="scope">
+          <el-tag v-if="(scope.row as Device).group" size="small" type="info" effect="plain">
+            {{ (scope.row as Device).group }}
+          </el-tag>
+          <span v-else class="ld-muted">-</span>
+        </template>
+      </el-table-column>
       <el-table-column prop="ip" label="IP 地址" width="140" />
       <el-table-column label="系统 / 置信度" width="130">
         <template #default="scope">
@@ -275,10 +434,17 @@ async function wakeDevice(device: Device): Promise<void> {
           <span v-if="(scope.row as Device).availableProtocols.length === 0" class="ld-muted">-</span>
         </template>
       </el-table-column>
-      <el-table-column label="操作" width="320" fixed="right">
+      <el-table-column label="操作" width="440" fixed="right">
         <template #default="scope">
           <el-button link type="primary" size="small" @click="emit('connect', scope.row as Device)">连接</el-button>
           <el-button link size="small" @click="emit('file-transfer', scope.row as Device)">传文件</el-button>
+          <el-button link size="small" :type="(scope.row as Device).favorite ? 'warning' : 'info'" @click="toggleFavorite(scope.row as Device)">
+            {{ (scope.row as Device).favorite ? '★' : '☆' }}
+          </el-button>
+          <el-button link size="small" :type="(scope.row as Device).pinned ? 'primary' : 'info'" @click="togglePinned(scope.row as Device)">
+            {{ (scope.row as Device).pinned ? '已置顶' : '置顶' }}
+          </el-button>
+          <el-button link size="small" @click="openEdit(scope.row as Device)">别名/分组</el-button>
           <el-tooltip v-if="serverPorts(scope.row as Device).length === 1" :content="SERVER_LINK_TIP" placement="top">
             <el-button link size="small" @click="openServer(scope.row as Device, serverPorts(scope.row as Device)[0])">管理页</el-button>
           </el-tooltip>
@@ -307,6 +473,31 @@ async function wakeDevice(device: Device): Promise<void> {
         </template>
       </el-table-column>
     </el-table>
+
+    <!-- v1.6: 编辑别名 / 分组 -->
+    <el-dialog
+      v-model="editVisible"
+      title="编辑设备别名与分组"
+      width="420px"
+      align-center
+      @closed="editTarget = null"
+    >
+      <div v-if="editTarget" class="edit-dialog">
+        <p class="ld-muted edit-target">{{ editTarget.name || editTarget.ip }}（{{ editTarget.ip }}）</p>
+        <div class="field">
+          <label>别名（留空则使用原名）</label>
+          <el-input v-model="editAlias" placeholder="例如 书房 NAS" clearable maxlength="40" />
+        </div>
+        <div class="field">
+          <label>分组（留空则未分组）</label>
+          <el-input v-model="editGroup" placeholder="例如 家庭 / 办公室" clearable maxlength="40" />
+        </div>
+      </div>
+      <template #footer>
+        <el-button @click="editVisible = false">取消</el-button>
+        <el-button type="primary" @click="submitEdit">保存</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -338,6 +529,44 @@ async function wakeDevice(device: Device): Promise<void> {
   display: flex;
   gap: 8px;
   flex-shrink: 0;
+}
+.list-toolbar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+.toolbar-count {
+  font-size: 12px;
+  margin-left: auto;
+}
+.filter-empty {
+  font-size: 13px;
+  padding: 24px;
+  text-align: center;
+}
+.meta-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px;
+  margin-top: 6px;
+}
+.group-tag {
+  margin-left: 4px;
+}
+.edit-dialog .field {
+  margin-bottom: 14px;
+}
+.edit-dialog .field label {
+  display: block;
+  font-size: 12px;
+  font-weight: 600;
+  margin-bottom: 6px;
+}
+.edit-target {
+  font-size: 12px;
+  margin: 0 0 14px;
 }
 .empty-actions {
   display: flex;

@@ -3,7 +3,9 @@ import type {
   AppSettings,
   CredentialInput,
   Device,
+  DeviceMetaInput,
   DiscoverySource,
+  ExportData,
   IpcResponse,
   LogLevel,
   LogQuery,
@@ -201,6 +203,25 @@ export function validateSettingsPatch(value: unknown): Partial<AppSettings> {
     }
     patch.defaultShareName = share
   }
+  // v1.6: RDP 连接预设。值域收敛，拒绝越界与非法组合，避免写进 .rdp 时产生异常参数。
+  if (value.rdpScreenMode === 'adaptive' || value.rdpScreenMode === 'fullscreen') {
+    patch.rdpScreenMode = value.rdpScreenMode
+  }
+  if (typeof value.rdpWidth === 'number') {
+    if (!Number.isInteger(value.rdpWidth) || value.rdpWidth < 0 || value.rdpWidth > 7680) {
+      throw new Error('分辨率宽度需在 0（跟随窗口）到 7680 之间')
+    }
+    patch.rdpWidth = value.rdpWidth
+  }
+  if (typeof value.rdpHeight === 'number') {
+    if (!Number.isInteger(value.rdpHeight) || value.rdpHeight < 0 || value.rdpHeight > 4320) {
+      throw new Error('分辨率高度需在 0（跟随窗口）到 4320 之间')
+    }
+    patch.rdpHeight = value.rdpHeight
+  }
+  if (typeof value.rdpPrinterRedirection === 'boolean') {
+    patch.rdpPrinterRedirection = value.rdpPrinterRedirection
+  }
   return patch
 }
 
@@ -318,4 +339,74 @@ export function validateWakeTarget(payload: unknown): WakeTarget {
   const target: WakeTarget = { mac: payload.mac.trim() }
   if (isValidIp(payload.ip)) target.ip = payload.ip
   return target
+}
+
+/* ---------- v1.6: 设备元数据 / 会话备注 / 导入备份包校验 ---------- */
+
+/**
+ * v1.6: 设备元数据更新入参。只接受 deviceId + 白名单字段，且至少带一个待更新字段，
+ * 避免渲染层误传空对象造成无意义写入。
+ */
+export function validateDeviceMetaInput(payload: unknown): DeviceMetaInput {
+  if (!isRecord(payload)) throw new Error('设备元数据参数格式错误')
+  const deviceId = asString(payload.deviceId).trim()
+  if (!deviceId) throw new Error('设备 ID 不能为空')
+  const input: DeviceMetaInput = { deviceId }
+  if (typeof payload.favorite === 'boolean') input.favorite = payload.favorite
+  if (typeof payload.pinned === 'boolean') input.pinned = payload.pinned
+  if (typeof payload.alias === 'string') {
+    const alias = payload.alias.trim()
+    if (alias.length > 80) throw new Error('设备别名不能超过 80 个字符')
+    input.alias = alias
+  }
+  if (typeof payload.group === 'string') {
+    const group = payload.group.trim()
+    if (group.length > 40) throw new Error('设备分组不能超过 40 个字符')
+    input.group = group
+  }
+  if (
+    input.favorite === undefined &&
+    input.pinned === undefined &&
+    input.alias === undefined &&
+    input.group === undefined
+  ) {
+    throw new Error('至少要提供一个待更新的元数据字段')
+  }
+  return input
+}
+
+/** v1.6: 会话备注入参。IPC 传两个独立参数（sessionId, note），故本函数也接收两个 unknown。 */
+export function validateSessionNote(sessionId: unknown, note: unknown): { id: string; note: string } {
+  const id = asString(sessionId).trim()
+  if (!id) throw new Error('会话 ID 不能为空')
+  if (typeof note !== 'string') throw new Error('会话备注必须是字符串')
+  if (note.length > 500) throw new Error('会话备注不能超过 500 个字符')
+  return { id, note }
+}
+
+/**
+ * v1.6: 导入备份包校验。只认本应用导出的固定结构，拒绝损坏/恶意文件。
+ * 设备复用 validateDevice 做规范化，确保 IP 合法、协议列表为数组、端口干净。
+ */
+export function validateExportData(payload: unknown): ExportData {
+  if (!isRecord(payload)) throw new Error('备份文件格式错误')
+  if (payload.format !== 'landesk-backup') throw new Error('不是 LanDesk 备份文件')
+  if (payload.version !== 1) throw new Error('不支持的备份文件版本')
+  if (!Array.isArray(payload.devices)) throw new Error('备份文件中的设备列表格式错误')
+  const devices = payload.devices.map((item) => {
+    if (!isRecord(item)) throw new Error('备份文件中的设备记录格式错误')
+    if (!isValidIp(item.ip)) throw new Error('备份文件中的设备 IP 不合法')
+    if (!Array.isArray(item.availableProtocols)) {
+      throw new Error('备份文件中的设备协议列表格式错误')
+    }
+    return validateDevice(item)
+  })
+  if (!isRecord(payload.settings)) throw new Error('备份文件中的设置格式错误')
+  return {
+    format: 'landesk-backup',
+    version: 1,
+    exportedAt: asString(payload.exportedAt, new Date().toISOString()),
+    devices,
+    settings: payload.settings as unknown as AppSettings
+  }
 }

@@ -32,16 +32,32 @@ export function buildRdpContent(options: {
   username?: string
   passwordHex?: string
   domain?: string
+  /** v1.6: 显示预设。不传时维持历史默认（会话自适应 2 + 1920×1080） */
+  screenMode?: 'adaptive' | 'fullscreen' | 'window'
+  width?: number
+  height?: number
+  /** v1.6: 打印机重定向，默认关闭 */
+  printerRedirection?: boolean
 }): string {
   const port = options.port && options.port > 0 ? options.port : RDP_PORT
   const passwordHex = options.passwordHex
   const autoLogin = !!passwordHex && isRdpPasswordHex(passwordHex)
+  // 'adaptive' 与历史默认同为 screen mode 2（跟随会话自适应）；'window' 为 1；'fullscreen' 为 2 且固定分辨率。
+  const screenModeId = options.screenMode === 'window' ? 1 : 2
+  const width =
+    typeof options.width === 'number' && options.width >= 640 && options.width <= 7680
+      ? Math.floor(options.width)
+      : 1920
+  const height =
+    typeof options.height === 'number' && options.height >= 480 && options.height <= 4320
+      ? Math.floor(options.height)
+      : 1080
   const lines: string[] = [
-    // 显示与连接优化：跟随会话自适应分辨率、32 位色、局域网带宽自动检测
-    'screen mode id:i:2',
+    // 显示与连接优化：32 位色、局域网带宽自动检测；分辨率/全屏由 v1.6 预设决定
+    `screen mode id:i:${screenModeId}`,
     'use multimon:i:0',
-    'desktopwidth:i:1920',
-    'desktopheight:i:1080',
+    `desktopwidth:i:${width}`,
+    `desktopheight:i:${height}`,
     'session bpp:i:32',
     `full address:s:${options.ip}:${port}`,
     'compression:i:1',
@@ -55,7 +71,7 @@ export function buildRdpContent(options: {
     ...(options.driveRedirection
       ? ['drivestoredirect:s:*', 'redirectdrives:i:1']
       : ['drivestoredirect:s:', 'redirectdrives:i:0']),
-    'redirectprinters:i:0',
+    `redirectprinters:i:${options.printerRedirection ? 1 : 0}`,
     'redirectcomports:i:0',
     'redirectsmartcards:i:0',
     // 重连与安全
@@ -133,7 +149,12 @@ export class RdpAdapter implements ProtocolAdapter {
       clipboard,
       driveRedirection,
       username: request.username,
-      passwordHex
+      passwordHex,
+      screenMode: request.screenMode,
+      width: request.width,
+      height: request.height,
+      printerRedirection:
+        request.printerRedirection ?? getSettings().rdpPrinterRedirection
     })
 
     const tempFile = path.join(

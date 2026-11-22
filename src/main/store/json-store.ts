@@ -45,7 +45,12 @@ export class JsonStore implements Store {
                       ? row.osConfidence
                       : 'none',
                   osEvidence: typeof row.osEvidence === 'string' ? row.osEvidence : '[]',
-                  osManual: row.osManual === 1 ? 1 : 0
+                  osManual: row.osManual === 1 ? 1 : 0,
+                  // v1.6: 老数据缺元数据字段时补默认值，已有值（含 0）原样保留
+                  favorite: row.favorite === 1 ? 1 : 0,
+                  pinned: row.pinned === 1 ? 1 : 0,
+                  alias: typeof row.alias === 'string' ? row.alias : '',
+                  group: typeof row.group === 'string' ? row.group : ''
                 }))
               : [],
             credentials: Array.isArray(raw.credentials) ? raw.credentials : [],
@@ -74,7 +79,12 @@ export class JsonStore implements Store {
   }
 
   listDevices(): DeviceRow[] {
-    return [...this.data.devices].sort((a, b) => b.lastSeenAt.localeCompare(a.lastSeenAt))
+    // 置顶优先 → 收藏优先 → 最近在线时间倒序（与 SQL 版排序保持一致）
+    return [...this.data.devices].sort((a, b) => {
+      if (b.pinned !== a.pinned) return b.pinned - a.pinned
+      if (b.favorite !== a.favorite) return b.favorite - a.favorite
+      return b.lastSeenAt.localeCompare(a.lastSeenAt)
+    })
   }
 
   upsertDevice(row: DeviceRow): void {
@@ -88,6 +98,20 @@ export class JsonStore implements Store {
     this.data.devices = this.data.devices.filter((item) => item.id !== id)
     this.data.credentials = this.data.credentials.filter((item) => item.deviceId !== id)
     this.persist()
+  }
+
+  updateDeviceMeta(
+    id: string,
+    patch: Partial<Pick<DeviceRow, 'favorite' | 'pinned' | 'alias' | 'group'>>
+  ): DeviceRow | undefined {
+    const row = this.data.devices.find((item) => item.id === id)
+    if (!row) return undefined
+    if (patch.favorite !== undefined) row.favorite = patch.favorite
+    if (patch.pinned !== undefined) row.pinned = patch.pinned
+    if (patch.alias !== undefined) row.alias = patch.alias
+    if (patch.group !== undefined) row.group = patch.group
+    this.persist()
+    return row
   }
 
   listCredentials(): CredentialRow[] {
@@ -134,6 +158,14 @@ export class JsonStore implements Store {
     this.persist()
   }
 
+  setSessionNote(id: string, note: string): boolean {
+    const row = this.data.sessions.find((item) => item.id === id)
+    if (!row) return false
+    row.note = note
+    this.persist()
+    return true
+  }
+
   getSetting(key: string): string | undefined {
     return this.data.settings[key]
   }
@@ -141,5 +173,9 @@ export class JsonStore implements Store {
   setSetting(key: string, value: string): void {
     this.data.settings[key] = value
     this.persist()
+  }
+
+  listSettings(): Record<string, string> {
+    return { ...this.data.settings }
   }
 }

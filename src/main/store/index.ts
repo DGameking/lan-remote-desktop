@@ -32,7 +32,8 @@ const BOOLEAN_KEYS = new Set<keyof AppSettings>([
   'complianceAccepted',
   'telemetryConsent',
   'clipboardSharing',
-  'driveRedirection'
+  'driveRedirection',
+  'rdpPrinterRedirection'
 ])
 
 /**
