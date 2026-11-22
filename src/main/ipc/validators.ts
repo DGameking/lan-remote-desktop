@@ -13,6 +13,7 @@ import type {
   ServerLinkTarget,
   WakeTarget
 } from '../../shared/types'
+import { parseManualSubnet } from '../discovery/subnet'
 import { parseMac } from '../discovery/wol'
 import { isProtocolId } from '../protocols/registry'
 
@@ -87,6 +88,20 @@ export function validateDevice(value: unknown): Device {
       ]
     : []
   const osHint = OS_HINTS.includes(value.osHint as OsHint) ? (value.osHint as OsHint) : 'unknown'
+  const osConfidence =
+    value.osConfidence === 'high' || value.osConfidence === 'medium' || value.osConfidence === 'low'
+      ? value.osConfidence
+      : 'none'
+  const osEvidence = Array.isArray(value.osEvidence)
+    ? value.osEvidence
+        .filter((item): item is Record<string, unknown> => !!item && typeof item === 'object')
+        .map((item) => ({
+          source: asString(item.source) as import('../../shared/types').OsEvidence['source'],
+          osHint: OS_HINTS.includes(item.osHint as OsHint) ? (item.osHint as OsHint) : 'unknown',
+          detail: asString(item.detail)
+        }))
+        .filter((item) => item.detail.length > 0)
+    : []
   const source = SOURCES.includes(value.source as DiscoverySource)
     ? (value.source as DiscoverySource)
     : 'manual'
@@ -97,6 +112,9 @@ export function validateDevice(value: unknown): Device {
     ip: value.ip,
     mac: asString(value.mac),
     osHint,
+    osConfidence,
+    osEvidence,
+    osManual: value.osManual === true,
     source,
     availableProtocols: protocols,
     detectedPorts,
@@ -267,6 +285,25 @@ export function validateServerLinkTarget(payload: unknown): ServerLinkTarget {
     throw new Error('管理页端口必须是 1..65535 的整数')
   }
   return { ip: payload.ip, port: payload.port }
+}
+
+/**
+ * v1.4: 目标网段参数。允许 undefined（自动选主网段）、合法 CIDR（192.168.10.0/24）
+ * 或单个 IPv4（192.168.10.68，按 /24 处理）。用 parseManualSubnet 做唯一解析来源。
+ */
+export function validateTargetCidr(payload: unknown): string | undefined {
+  if (payload === undefined || payload === null || payload === '') return undefined
+  if (typeof payload !== 'string') throw new Error('目标网段参数必须是字符串')
+  const parsed = parseManualSubnet(payload)
+  if (!parsed) throw new Error('网段格式不合法，请输入 192.168.10.0/24 或 192.168.10.68')
+  return parsed.cidr
+}
+
+/** v1.4: 手动指定系统类型入参：deviceId 非空 + 合法 OsHint。 */
+export function validateDeviceSetOs(deviceId: unknown, osHint: unknown): { deviceId: string; osHint: OsHint } {
+  if (typeof deviceId !== 'string' || !deviceId.trim()) throw new Error('设备 ID 不能为空')
+  if (!OS_HINTS.includes(osHint as OsHint)) throw new Error('不支持的系统类型')
+  return { deviceId: deviceId.trim(), osHint: osHint as OsHint }
 }
 
 /**

@@ -2,7 +2,7 @@
 import { onMounted, onUnmounted, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { api, unwrap } from './api'
-import type { AppSettings, AppStatus, Device, ScanProgress } from '../../shared/types'
+import type { AppSettings, AppStatus, Device, OsHint, ScanProgress, SubnetView } from '../../shared/types'
 import ScanPanel from './components/ScanPanel.vue'
 import DeviceList from './components/DeviceList.vue'
 import ConnectDialog from './components/ConnectDialog.vue'
@@ -28,6 +28,9 @@ const transferDevice = ref<Device | null>(null)
 const settings = ref<AppSettings | null>(null)
 const complianceVisible = ref(false)
 const complianceChecked = ref(false)
+/** v1.4-A: 本机识别到的网段列表与用户当前选中的扫描目标 */
+const subnets = ref<SubnetView[]>([])
+const targetCidr = ref<string>('')
 
 let unsubscribeProgress: (() => void) | null = null
 
@@ -51,6 +54,31 @@ async function refreshAll(): Promise<void> {
   await Promise.all([refreshDevices(), refreshStatus(), refreshSettings()])
 }
 
+/** v1.4-A: 拉取网段列表，默认选中主网段（虚拟网卡降权，UI 有标记）。 */
+async function refreshSubnets(): Promise<void> {
+  try {
+    subnets.value = await unwrap(api.discoverySubnets())
+    const primary = subnets.value.find((s) => s.isPrimary)
+    const firstPhysical = subnets.value.find((s) => s.kind === 'physical')
+    const chosen = primary ?? firstPhysical ?? subnets.value[0]
+    if (chosen && !targetCidr.value) targetCidr.value = chosen.cidr
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : String(error))
+  }
+}
+
+/** v1.4-B: 手动指定系统类型后回刷设备列表。 */
+async function handleSetOs(device: Device, osHint: OsHint): Promise<void> {
+  try {
+    const updated = await unwrap(api.deviceSetOs(device.id, osHint))
+    const index = devices.value.findIndex((item) => item.id === updated.id)
+    if (index >= 0) devices.value[index] = updated
+    ElMessage.success('系统类型已更新，后续扫描将保留此设置')
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : String(error))
+  }
+}
+
 async function refreshSettings(): Promise<void> {
   try {
     settings.value = await unwrap(api.settingsGet())
@@ -63,7 +91,7 @@ async function startScan(): Promise<void> {
   if (scanning.value) return
   scanning.value = true
   try {
-    await unwrap(api.discoveryStart())
+    await unwrap(api.discoveryStart(targetCidr.value || undefined))
     await refreshDevices()
     ElMessage.success('扫描完成，设备列表已更新')
   } catch (error) {
@@ -101,6 +129,7 @@ onMounted(async () => {
     if (next.phase === 'done' || next.phase === 'stopped') scanning.value = false
   })
   await refreshAll()
+  await refreshSubnets()
   try {
     const settings = await unwrap(api.settingsGet())
     if (!settings.complianceAccepted) complianceVisible.value = true
@@ -157,6 +186,9 @@ onUnmounted(() => {
               :progress="progress"
               :subnet="appStatus?.subnet || ''"
               :device-count="devices.length"
+              :subnets="subnets"
+              :target-cidr="targetCidr"
+              @update:target-cidr="targetCidr = $event"
               @start="startScan"
               @stop="stopScan"
             />
@@ -166,6 +198,7 @@ onUnmounted(() => {
               @connect="selectedDevice = $event"
               @file-transfer="transferDevice = $event"
               @refresh="refreshDevices"
+              @set-os="handleSetOs($event.device, $event.osHint)"
             />
           </div>
         </el-tab-pane>

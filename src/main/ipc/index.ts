@@ -7,6 +7,7 @@ import {
   type CredentialView,
   type IpcResponse,
   type ServerLinkResult,
+  type SubnetView,
   type WakeResult
 } from '../../shared/types'
 import type { ScanManager } from '../discovery/manager'
@@ -40,6 +41,8 @@ import {
   validateLogQuery,
   validateServerLinkTarget,
   validateSettingsPatch,
+  validateTargetCidr,
+  validateDeviceSetOs,
   validateWakeTarget
 } from './validators'
 
@@ -63,10 +66,11 @@ export function registerIpc(
   scanManager: ScanManager,
   sessionManager: SessionManager
 ): void {
-  ipcMain.handle(IPC_CHANNELS.DISCOVERY_START, async (): Promise<IpcResponse> => {
+  ipcMain.handle(IPC_CHANNELS.DISCOVERY_START, async (_event, payload: unknown): Promise<IpcResponse> => {
     try {
       if (scanManager.isScanning) return fail('扫描正在进行中')
-      return ok(await scanManager.start())
+      const targetCidr = validateTargetCidr(payload)
+      return ok(await scanManager.start(targetCidr))
     } catch (error) {
       return errorResponse('discovery:start', error)
     }
@@ -75,6 +79,23 @@ export function registerIpc(
   ipcMain.handle(IPC_CHANNELS.DISCOVERY_STOP, async (): Promise<IpcResponse> => {
     scanManager.stop()
     return ok(true, '已发送停止扫描请求')
+  })
+
+  // v1.4-A: 列出所有网卡网段，UI 展示主网段/虚拟网卡并允许手动选择扫描目标。
+  ipcMain.handle(IPC_CHANNELS.DISCOVERY_SUBNETS, async (): Promise<IpcResponse> => {
+    try {
+      const views: SubnetView[] = detectSubnets().map((s) => ({
+        cidr: s.cidr,
+        ip: s.ip,
+        kind: s.kind ?? 'physical',
+        isPrimary: s.isPrimary === true,
+        iface: s.iface ?? '',
+        hostCount: s.hosts.length
+      }))
+      return ok(views)
+    } catch (error) {
+      return errorResponse('discovery:subnets', error)
+    }
   })
 
   ipcMain.handle(IPC_CHANNELS.DEVICE_LIST, async (): Promise<IpcResponse> => {
@@ -104,6 +125,33 @@ export function registerIpc(
       return errorResponse('device:delete', error)
     }
   })
+
+  // v1.4-B: 手动指定系统类型。写入 osManual 锁，后续扫描不再自动覆盖；返回更新后的设备。
+  ipcMain.handle(
+    IPC_CHANNELS.DEVICE_SET_OS,
+    async (_event, deviceId: unknown, osHint: unknown): Promise<IpcResponse> => {
+      try {
+        const input = validateDeviceSetOs(deviceId, osHint)
+        const store = getStore()
+        const row = store.listDevices().find((item) => item.id === input.deviceId)
+        if (!row) return fail('设备不存在，请先扫描或手动添加')
+        const updated = {
+          ...row,
+          osHint: input.osHint,
+          osConfidence: 'high' as const,
+          osEvidence: JSON.stringify([
+            { source: 'manual', osHint: input.osHint, detail: '用户手动指定的系统类型（扫描不再覆盖）' }
+          ]),
+          osManual: 1,
+          updatedAt: now()
+        }
+        store.upsertDevice(updated)
+        return ok(rowToDevice(updated), '系统类型已更新，后续扫描将保留此设置')
+      } catch (error) {
+        return errorResponse('device:setOs', error)
+      }
+    }
+  )
 
   ipcMain.handle(IPC_CHANNELS.CREDENTIAL_SET, async (_event, payload: unknown): Promise<IpcResponse> => {
     try {

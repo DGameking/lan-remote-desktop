@@ -7,7 +7,7 @@ import {
 
 /** 只暴露明确列入白名单的通道，渲染层无法访问 ipcRenderer / Node 能力 */
 const api: ElectronAPI = {
-  discoveryStart: () => ipcRenderer.invoke(IPC_CHANNELS.DISCOVERY_START),
+  discoveryStart: (targetCidr) => ipcRenderer.invoke(IPC_CHANNELS.DISCOVERY_START, targetCidr),
   discoveryStop: () => ipcRenderer.invoke(IPC_CHANNELS.DISCOVERY_STOP),
   onDiscoveryProgress: (callback: (progress: ScanProgress) => void) => {
     const listener = (_event: IpcRendererEvent, progress: ScanProgress): void => {
@@ -16,9 +16,11 @@ const api: ElectronAPI = {
     ipcRenderer.on(IPC_CHANNELS.DISCOVERY_PROGRESS, listener)
     return () => ipcRenderer.removeListener(IPC_CHANNELS.DISCOVERY_PROGRESS, listener)
   },
+  discoverySubnets: () => ipcRenderer.invoke(IPC_CHANNELS.DISCOVERY_SUBNETS),
   deviceList: () => ipcRenderer.invoke(IPC_CHANNELS.DEVICE_LIST),
   deviceUpsert: (device) => ipcRenderer.invoke(IPC_CHANNELS.DEVICE_UPSERT, device),
   deviceDelete: (id) => ipcRenderer.invoke(IPC_CHANNELS.DEVICE_DELETE, id),
+  deviceSetOs: (deviceId, osHint) => ipcRenderer.invoke(IPC_CHANNELS.DEVICE_SET_OS, deviceId, osHint),
   credentialSet: (input) => ipcRenderer.invoke(IPC_CHANNELS.CREDENTIAL_SET, input),
   credentialList: () => ipcRenderer.invoke(IPC_CHANNELS.CREDENTIAL_LIST),
   credentialDelete: (id) => ipcRenderer.invoke(IPC_CHANNELS.CREDENTIAL_DELETE, id),

@@ -2,13 +2,14 @@
 import { ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { api, unwrap } from '../api'
-import type { Device, OsHint, ProtocolId } from '../../../shared/types'
+import type { Device, OsConfidence, OsHint, ProtocolId } from '../../../shared/types'
 
 const props = defineProps<{ devices: Device[]; loading?: boolean }>()
 const emit = defineEmits<{
   (e: 'connect', device: Device): void
   (e: 'file-transfer', device: Device): void
   (e: 'refresh'): void
+  (e: 'set-os', payload: { device: Device; osHint: OsHint }): void
 }>()
 
 const viewMode = ref<'card' | 'table'>('card')
@@ -31,6 +32,30 @@ const protocolLabels: Record<ProtocolId, string> = {
   rdp: 'RDP',
   vnc: 'VNC',
   rustdesk: 'RustDesk'
+}
+
+// v1.4-B: 置信度标签与识别依据展示
+const confidenceLabels: Record<OsConfidence, string> = {
+  high: '高',
+  medium: '中',
+  low: '低',
+  none: '未识别'
+}
+const confidenceClass: Record<OsConfidence, string> = {
+  high: 'conf-high',
+  medium: 'conf-medium',
+  low: 'conf-low',
+  none: 'conf-none'
+}
+const osOptions: OsHint[] = ['windows', 'macos', 'linux', 'fnos', 'unknown']
+
+function confidenceOf(device: Device): OsConfidence {
+  return device.osConfidence ?? 'none'
+}
+
+function setOs(device: Device, cmd: unknown): void {
+  if (!osOptions.includes(cmd as OsHint)) return
+  emit('set-os', { device, osHint: cmd as OsHint })
 }
 
 function recommend(device: Device): ProtocolId {
@@ -112,7 +137,28 @@ async function wakeDevice(device: Device): Promise<void> {
             <span class="status-dot" :class="{ online: device.online }" />
             <strong :title="displayName(device)">{{ displayName(device) }}</strong>
           </div>
-          <span class="ld-tag" :class="osTagClass[device.osHint]">{{ osLabels[device.osHint] }}</span>
+          <el-dropdown trigger="click" @command="(cmd: OsHint) => setOs(device, cmd)">
+            <span class="ld-tag os-tag" :class="osTagClass[device.osHint]">
+              {{ osLabels[device.osHint] }}
+              <span class="conf-badge" :class="confidenceClass[confidenceOf(device)]">
+                {{ device.osManual ? '手动' : confidenceLabels[confidenceOf(device)] }}
+              </span>
+            </span>
+            <template #dropdown>
+              <el-dropdown-menu>
+                <el-dropdown-item disabled>系统识别依据：</el-dropdown-item>
+                <el-dropdown-item v-for="(e, i) in (device.osEvidence ?? [])" :key="i" disabled>
+                  {{ e.detail }}
+                </el-dropdown-item>
+                <el-dropdown-item disabled divided>手动指定系统（扫描不再覆盖）：</el-dropdown-item>
+                <el-dropdown-item
+                  v-for="opt in osOptions"
+                  :key="opt"
+                  :command="opt"
+                >{{ osLabels[opt] }}</el-dropdown-item>
+              </el-dropdown-menu>
+            </template>
+          </el-dropdown>
         </div>
         <div class="device-ip">{{ device.ip }}</div>
         <div class="device-meta ld-muted">
@@ -167,11 +213,32 @@ async function wakeDevice(device: Device): Promise<void> {
     <el-table v-else :data="props.devices" stripe style="width: 100%" max-height="460">
       <el-table-column prop="name" label="设备名" min-width="140" />
       <el-table-column prop="ip" label="IP 地址" width="140" />
-      <el-table-column label="系统" width="110">
+      <el-table-column label="系统 / 置信度" width="130">
         <template #default="scope">
-          <span class="ld-tag" :class="osTagClass[(scope.row as Device).osHint]">
-            {{ osLabels[(scope.row as Device).osHint] }}
-          </span>
+          <el-dropdown trigger="click" @command="(cmd: unknown) => setOs(scope.row as Device, cmd)">
+            <span class="ld-tag os-tag" :class="osTagClass[(scope.row as Device).osHint]">
+              {{ osLabels[(scope.row as Device).osHint] }}
+              <span class="conf-badge" :class="confidenceClass[confidenceOf(scope.row as Device)]">
+                {{ (scope.row as Device).osManual ? '手动' : confidenceLabels[confidenceOf(scope.row as Device)] }}
+              </span>
+            </span>
+            <template #dropdown>
+              <el-dropdown-menu>
+                <template v-if="(scope.row as Device).osEvidence?.length">
+                  <el-dropdown-item disabled>系统识别依据：</el-dropdown-item>
+                  <el-dropdown-item
+                    v-for="(e, i) in (scope.row as Device).osEvidence"
+                    :key="i"
+                    disabled
+                  >{{ e.detail }}</el-dropdown-item>
+                  <el-dropdown-item disabled divided>手动指定（扫描不再覆盖）：</el-dropdown-item>
+                </template>
+                <el-dropdown-item v-for="opt in osOptions" :key="opt" :command="opt">
+                  {{ osLabels[opt] }}
+                </el-dropdown-item>
+              </el-dropdown-menu>
+            </template>
+          </el-dropdown>
         </template>
       </el-table-column>
       <el-table-column label="状态" width="100">
@@ -340,5 +407,33 @@ async function wakeDevice(device: Device): Promise<void> {
 }
 .text-online {
   color: var(--ld-success);
+}
+.os-tag {
+  cursor: pointer;
+}
+.conf-badge {
+  display: inline-block;
+  margin-left: 4px;
+  padding: 0 5px;
+  border-radius: 999px;
+  font-size: 10px;
+  line-height: 16px;
+  font-weight: 600;
+}
+.conf-high {
+  background: #16a34a;
+  color: #fff;
+}
+.conf-medium {
+  background: #2563eb;
+  color: #fff;
+}
+.conf-low {
+  background: #f59e0b;
+  color: #fff;
+}
+.conf-none {
+  background: #94a3b8;
+  color: #fff;
 }
 </style>

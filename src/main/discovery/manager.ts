@@ -5,7 +5,7 @@ import { readArpTable, type ArpEntry } from './arp'
 import { probeFingerprints } from './fingerprint'
 import { browseMdns } from './mdns'
 import { scanPorts } from './port-scan'
-import { detectSubnets, type SubnetInfo } from './subnet'
+import { detectSubnets, subnetContainsIp, type SubnetInfo } from './subnet'
 
 /** L1 存活快扫端口：覆盖常见原生远程管理 / 文件共享能力 */
 export const L1_PORTS = [22, 445, 3389, 5900, 5666] as const
@@ -72,10 +72,20 @@ export class ScanManager {
     return hosts
   }
 
-  async start(): Promise<{ subnet: string }> {
+  /**
+   * v1.4: 支持调用方指定目标网段 CIDR（如 192.168.10.0/24）。
+   * 未指定时用 detectSubnets() 排序后的第一个（默认路由物理网卡优先）。
+   */
+  async start(targetCidr?: string): Promise<{ subnet: string }> {
     if (this.scanning) throw new Error('扫描正在进行中')
     this.subnets = detectSubnets()
-    const target = this.subnets[0]
+    let target: SubnetInfo | undefined
+    if (targetCidr) {
+      target = this.subnets.find((s) => s.cidr === targetCidr)
+      if (!target) throw new Error(`指定的网段 ${targetCidr} 不在当前网卡列表中`)
+    } else {
+      target = this.subnets[0]
+    }
     if (!target) throw new Error('未检测到可用的局域网 IPv4 网卡，请检查网络连接')
 
     this.currentSubnet = target.cidr
@@ -170,12 +180,15 @@ export class ScanManager {
       const mdnsRecords = await mdnsPromise
       for (const record of mdnsRecords) {
         if (this.stopRequested) break
+        // v1.4-A: 跨网段的 mDNS 记录（如 WSL/Docker 网关 172.18.0.1）不得混入目标网段候选
+        if (!subnetContainsIp(record.ip, target)) continue
         const existing = candidates.find((candidate) => candidate.ip === record.ip)
         if (existing) {
           existing.name = existing.name || record.name
           existing.ports = [...new Set([...(existing.ports ?? []), ...(record.ports ?? [record.port])])]
           existing.protocols = [...new Set([...(existing.protocols ?? []), ...record.protocols])]
           existing.fingerprint = [...(existing.fingerprint ?? []), ...(record.fingerprint ?? [])]
+          existing.txt = { ...(existing.txt ?? {}), ...(record.txt ?? {}) }
         } else {
           candidates.push({
             ip: record.ip,
@@ -183,6 +196,7 @@ export class ScanManager {
             ports: record.ports ?? [record.port],
             protocols: record.protocols,
             fingerprint: record.fingerprint ?? [],
+            txt: record.txt,
             source: 'mdns'
           })
         }

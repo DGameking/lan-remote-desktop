@@ -1,5 +1,9 @@
 import type { Device, DiscoverySource, OsHint, ProtocolId, ServiceFingerprint } from '../../shared/types'
+import { scopedLogger } from '../logger'
 import { deviceToRow, getStore, now } from '../store'
+import { detectOs } from './os-detect'
+
+const discoveryLog = scopedLogger('discovery')
 
 export interface DeviceCandidate {
   ip: string
@@ -10,6 +14,8 @@ export interface DeviceCandidate {
   detectedPorts?: number[]
   protocols?: ProtocolId[]
   fingerprint?: ServiceFingerprint[]
+  /** v1.4: mDNS TXT 白名单字段，用于中置信度系统识别 */
+  txt?: Record<string, string>
   source: DiscoverySource
 }
 
@@ -32,22 +38,9 @@ export function deviceIdForIp(ip: string): string {
   return `dev-${ip.replace(/\./g, '-')}`
 }
 
-/** 端口 3389 判定 Windows；5900 暂标 unknown；名称关键字用于补充平台推测。
- *  第 3 参为服务指纹，优先于端口/名称规则；省略时保持旧行为不变。 */
+/** 兼容 v1.3 的旧接口：仅取系统推测。新逻辑统一在 os-detect.ts，保留此别名供既有调用与测试。 */
 export function inferOsHint(ports: number[], name: string, fingerprint: ServiceFingerprint[] = []): OsHint {
-  for (const fp of fingerprint) {
-    if (fp.service === 'vnc' && fp.version === '003.889') return 'macos'
-    if (fp.service === 'ssh' && fp.osHint === 'linux') return 'linux'
-    if (fp.service === 'http' && fp.osHint === 'fnos') return 'fnos'
-    if (fp.service === 'rdp' && fp.osHint === 'windows') return 'windows'
-    if (fp.osHint && fp.osHint !== 'unknown') return fp.osHint
-  }
-  if (ports.includes(3389)) return 'windows'
-  const lower = name.toLowerCase()
-  if (/(fnos|飞牛|\bnas\b)/.test(lower)) return 'fnos'
-  if (/(macos|macbook|imac|mac)/.test(lower)) return 'macos'
-  if (/(linux|ubuntu|debian|centos|fedora|arch)/.test(lower)) return 'linux'
-  return 'unknown'
+  return detectOs({ ports, name, fingerprint }).osHint
 }
 
 /** 扫描开始前把历史设备标记为离线，扫描中重新发现的会置回在线 */
@@ -75,7 +68,8 @@ export function aggregateAndPersist(candidates: DeviceCandidate[]): Device[] {
         ports: [...(candidate.ports ?? [])],
         detectedPorts: [...(candidate.detectedPorts ?? [])],
         protocols: [...(candidate.protocols ?? [])],
-        fingerprint: [...(candidate.fingerprint ?? [])]
+        fingerprint: [...(candidate.fingerprint ?? [])],
+        txt: { ...(candidate.txt ?? {}) }
       })
       continue
     }
@@ -86,6 +80,7 @@ export function aggregateAndPersist(candidates: DeviceCandidate[]): Device[] {
     ])
     const protocols = new Set([...(existing.protocols ?? []), ...(candidate.protocols ?? [])])
     const fingerprint = [...(existing.fingerprint ?? []), ...(candidate.fingerprint ?? [])]
+    const txt = { ...(existing.txt ?? {}), ...(candidate.txt ?? {}) }
     const preferNew = SOURCE_PRIORITY[candidate.source] > SOURCE_PRIORITY[existing.source]
     byIp.set(candidate.ip, {
       ip: candidate.ip,
@@ -95,6 +90,7 @@ export function aggregateAndPersist(candidates: DeviceCandidate[]): Device[] {
       detectedPorts: [...detectedPorts],
       protocols: [...protocols],
       fingerprint,
+      txt,
       source: preferNew ? candidate.source : existing.source
     })
   }
@@ -126,12 +122,28 @@ export function aggregateAndPersist(candidates: DeviceCandidate[]): Device[] {
     const id = deviceIdForIp(candidate.ip)
     const old = existingRows.get(id)
     const timestamp = now()
+    const displayName = candidate.name || old?.name || ''
+
+    // v1.4-B: 用户手动指定的系统优先，扫描不覆盖；否则走分层置信度识别。
+    const detected = detectOs({
+      ports: hintPorts,
+      name: displayName,
+      mac: candidate.mac || old?.mac || '',
+      fingerprint: candidate.fingerprint ?? [],
+      mdnsTxt: candidate.txt
+    })
+    const manualLocked = old?.osManual === 1
     const device: Device = {
       id,
-      name: candidate.name || old?.name || candidate.ip,
+      name: displayName || candidate.ip,
       ip: candidate.ip,
       mac: candidate.mac || old?.mac || '',
-      osHint: inferOsHint(hintPorts, candidate.name || old?.name || '', candidate.fingerprint ?? []),
+      osHint: manualLocked ? (old!.osHint ?? detected.osHint) : detected.osHint,
+      osConfidence: manualLocked ? 'high' : detected.confidence,
+      osEvidence: manualLocked
+        ? [{ source: 'manual', osHint: old!.osHint, detail: '用户手动指定的系统类型（扫描不再覆盖）' }]
+        : detected.evidence,
+      osManual: manualLocked,
       source: candidate.source,
       availableProtocols,
       detectedPorts: [...detectedPorts],
@@ -141,6 +153,20 @@ export function aggregateAndPersist(candidates: DeviceCandidate[]): Device[] {
       updatedAt: timestamp
     }
     store.upsertDevice(deviceToRow(device))
+    // v1.4-E: 识别证据回流到诊断日志，便于用户对误判截图反馈后针对性校正规则。
+    // IP 保留完整（定位端口所必需）；MAC 不写日志；confidence/evidence 均为判定结论非敏感值。
+    if (!manualLocked && detected.evidence.length > 0) {
+      discoveryLog.event({
+        level: 'INFO',
+        event: 'os.detected',
+        context: {
+          ip: candidate.ip,
+          osHint: device.osHint,
+          confidence: device.osConfidence,
+          evidence: detected.evidence.map((e) => `${e.source}:${e.osHint}`)
+        }
+      })
+    }
     devices.push(device)
   }
 
@@ -157,7 +183,10 @@ export function upsertManualDevice(ip: string, name?: string): Device {
     name: name?.trim() || ip,
     ip,
     mac: old?.mac ?? '',
-    osHint: 'unknown',
+    osHint: old?.osHint ?? 'unknown',
+    osConfidence: old?.osConfidence ?? 'none',
+    osEvidence: [],
+    osManual: old?.osManual === 1,
     source: 'manual',
     availableProtocols: [],
     detectedPorts: [],

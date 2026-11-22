@@ -9,6 +9,36 @@ export type ProtocolId = 'rdp' | 'vnc' | 'rustdesk'
 /** 设备平台推测 */
 export type OsHint = 'windows' | 'macos' | 'linux' | 'fnos' | 'unknown'
 
+/**
+ * v1.4: 系统识别置信度。
+ * high = 协议横幅/握手层强信号；medium = mDNS TXT/MAC OUI 中信号；
+ * low = TTL/端口组合/名称关键字弱信号；none = 无任何可用信号。
+ */
+export type OsConfidence = 'high' | 'medium' | 'low' | 'none'
+
+/** v1.4: 单条识别依据，供 UI 展开查看与诊断证据回流 */
+export interface OsEvidence {
+  /** 证据来源层与类型 */
+  source: 'rfb' | 'rdp' | 'ssh' | 'http' | 'mdns-txt' | 'mac-oui' | 'ttl' | 'port' | 'name' | 'manual'
+  /** 该证据指向的系统 */
+  osHint: OsHint
+  /** 人类可读说明（不含 MAC 等敏感值） */
+  detail: string
+}
+
+/**
+ * v1.4: 供渲染层展示的网段视图。
+ * kind=virtual 的网卡（WSL/Docker/VPN 等）在 UI 上降权标记，避免用户误选。
+ */
+export interface SubnetView {
+  cidr: string
+  ip: string
+  kind: 'physical' | 'virtual'
+  isPrimary: boolean
+  iface: string
+  hostCount: number
+}
+
 /** 服务指纹识别出的能力类型（与 ProtocolId 分离，不污染连接协议） */
 export type DetectedServiceId = 'vnc' | 'ssh' | 'rdp' | 'smb' | 'http' | 'winrm' | 'afp' | 'unknown'
 
@@ -34,6 +64,12 @@ export interface Device {
   ip: string
   mac: string
   osHint: OsHint
+  /** v1.4: 系统识别置信度（老数据缺省视为 none） */
+  osConfidence?: OsConfidence
+  /** v1.4: 系统识别依据列表（老数据缺省为空） */
+  osEvidence?: OsEvidence[]
+  /** v1.4: 用户是否手动指定了系统；为 true 时扫描不再自动覆盖 osHint */
+  osManual?: boolean
   source: DiscoverySource
   availableProtocols: ProtocolId[]
   /** 该 IP 上扫描发现并做过服务识别的开放端口（用于连接时自动选用真实端口） */
@@ -217,8 +253,12 @@ export const IPC_CHANNELS = {
   DISCOVERY_START: 'discovery:start',
   DISCOVERY_PROGRESS: 'discovery:progress',
   DISCOVERY_STOP: 'discovery:stop',
+  /** v1.4: 列出本机识别到的所有网段（含主/虚拟标记），供 UI 网段选择器用 */
+  DISCOVERY_SUBNETS: 'discovery:subnets',
   DEVICE_LIST: 'device:list',
   DEVICE_UPSERT: 'device:upsert',
+  /** v1.4: 手动指定某设备的系统类型（人工确认优先于自动识别） */
+  DEVICE_SET_OS: 'device:setOs',
   DEVICE_DELETE: 'device:delete',
   CREDENTIAL_SET: 'credential:set',
   CREDENTIAL_LIST: 'credential:list',
@@ -293,6 +333,111 @@ export const CAPABILITY_MATRIX: Record<ProtocolId, ProtocolCapabilities> = {
       note: '由 RustDesk 官方客户端原生提供，会话窗口内使用“文件传输”功能。'
     }
   }
+}
+
+/* ==========================================================================
+ * v1.4-C: 系统 × 协议 能力分级矩阵
+ * 事实口径见 docs/13-v1.4诊断与重构方案.md：LanDesk 只调起第三方 Viewer，
+ * 不实现任何远程协议栈；以下分级以「系统/协议原生」与「外部客户端」严格区分。
+ * ========================================================================== */
+
+/** v1.4-C: 单个能力在某个 系统×协议 组合下的分级 */
+export type CapabilityLevel = 'native' | 'client' | 'limited' | 'none'
+
+/**
+ * v1.4-C: 系统×协议 能力矩阵。
+ * - native: 系统/协议原生提供，LanDesk 可直接开启
+ * - client: 由外部客户端提供，LanDesk 只调起、不保证
+ * - limited: 部分支持或有明显限制（如 macOS VNC 剪贴板依赖 Viewer 实现 Apple 扩展）
+ * - none: 不支持
+ */
+export interface SystemProtocolCapability {
+  clipboard: { level: CapabilityLevel; note: string }
+  fileTransfer: { level: CapabilityLevel; note: string }
+  /** 画面键鼠控制（所有远控协议都支持，单独列出便于 UI 展示） */
+  screenControl: { level: CapabilityLevel; note: string }
+  /** 是否需要被控端预先开启服务/权限的操作提示 */
+  prerequisite: string
+}
+
+/**
+ * v1.4-C: 系统×协议 能力矩阵（只读契约）。
+ * RFB 是协议、VNC 是使用它的技术；macOS 屏幕共享 = 标准 RFB/VNC + Apple 私有
+ * 扩展（ARD 认证/文件传输/剪贴板同步），LanDesk 只调起 Viewer，拿不到私有扩展。
+ * 飞牛OS/Linux 无专属远控协议，按实际开启的 VNC/xrdp 判定。
+ */
+export const SYSTEM_PROTOCOL_MATRIX: Partial<
+  Record<OsHint, Partial<Record<ProtocolId, SystemProtocolCapability>>>
+> = {
+  windows: {
+    rdp: {
+      clipboard: { level: 'native', note: 'Windows RDP 原生剪贴板重定向，复制文本/图片可直接双向粘贴。' },
+      fileTransfer: { level: 'native', note: 'RDP 原生磁盘重定向，开启后本机磁盘映射进远程会话。' },
+      screenControl: { level: 'native', note: 'RDP 原生提供画面与键鼠控制。' },
+      prerequisite: '被控端需为 Windows 专业版/企业版，在「设置 → 系统 → 远程桌面」开启远程桌面，且账户已设密码。'
+    },
+    vnc: {
+      clipboard: { level: 'client', note: '剪贴板由所调起的 VNC Viewer 实现（RFB CutText），LanDesk 不保证。' },
+      fileTransfer: { level: 'none', note: '标准 VNC 不含文件传输，建议使用 RDP 或 SMB 通道。' },
+      screenControl: { level: 'native', note: 'VNC/RFB 原生提供画面与键鼠控制。' },
+      prerequisite: '被控端需已安装并启动 VNC Server，并放行 5900（或自定义显示）端口。'
+    }
+  },
+  macos: {
+    vnc: {
+      clipboard: {
+        level: 'limited',
+        note: 'macOS 屏幕共享的剪贴板同步依赖 Viewer 实现 Apple 私有扩展，LanDesk 仅调起第三方 Viewer，无法保证可用。'
+      },
+      fileTransfer: { level: 'none', note: '文件传输属于 Apple 私有扩展，第三方 Viewer 无法保证；可用 SMB 通道。' },
+      screenControl: { level: 'native', note: '标准 RFB/VNC 提供画面与键鼠控制，可正常连接。' },
+      prerequisite: '被控端需在「系统设置 → 通用 → 共享」开启「屏幕共享」，并允许你的账户访问。'
+    },
+    rustdesk: {
+      clipboard: { level: 'client', note: '剪贴板同步由 RustDesk 官方客户端原生提供，LanDesk 只调起。' },
+      fileTransfer: { level: 'client', note: '文件传输由 RustDesk 官方客户端原生提供，在其会话窗口内使用。' },
+      screenControl: { level: 'native', note: 'RustDesk 客户端原生提供画面与键鼠控制。' },
+      prerequisite: '被控端需安装 RustDesk 并保持在线，准备好设备 ID 与临时密码。'
+    }
+  },
+  linux: {
+    vnc: {
+      clipboard: { level: 'client', note: '剪贴板由所调起的 VNC Viewer 实现（RFB CutText），LanDesk 不保证。' },
+      fileTransfer: { level: 'none', note: '标准 VNC 不含文件传输，建议使用 RDP(xrdp) 或 SMB 通道。' },
+      screenControl: { level: 'native', note: 'VNC/RFB 原生提供画面与键鼠控制。' },
+      prerequisite: '被控端需启动 VNC Server（如 TigerVNC/x11vnc）并放行对应显示端口。'
+    },
+    rdp: {
+      clipboard: { level: 'native', note: 'xrdp(RDP) 原生剪贴板重定向，可直接在两台电脑间粘贴。' },
+      fileTransfer: { level: 'native', note: 'xrdp(RDP) 支持磁盘重定向，可在会话内传输文件。' },
+      screenControl: { level: 'native', note: 'RDP 原生提供画面与键鼠控制。' },
+      prerequisite: '被控端需安装并启动 xrdp 服务（TCP 3389），且账户已设密码。'
+    }
+  },
+  fnos: {
+    vnc: {
+      clipboard: { level: 'client', note: '飞牛OS 的 VNC 剪贴板由所调起 Viewer 实现，LanDesk 不保证。' },
+      fileTransfer: { level: 'none', note: '飞牛OS 无专属远控协议，标准 VNC 不含文件传输，可用 SMB 通道。' },
+      screenControl: { level: 'native', note: '飞牛OS 上开启的 VNC 服务原生提供画面与键鼠控制。' },
+      prerequisite: '飞牛OS 无专属远控协议，需在系统中开启 VNC/远程桌面服务，或改用 SSH/RustDesk。'
+    }
+  }
+}
+
+/** 未命中矩阵时的兜底能力（保守口径：不夸大任何能力） */
+const FALLBACK_CAPABILITY: SystemProtocolCapability = {
+  clipboard: { level: 'client', note: '剪贴板取决于所调起客户端的实现，LanDesk 不保证。' },
+  fileTransfer: { level: 'none', note: '当前组合不保证文件传输，建议使用 SMB 通道。' },
+  screenControl: { level: 'native', note: '远控协议原生提供画面与键鼠控制。' },
+  prerequisite: '请确认被控端已开启对应远程桌面服务并允许局域网连接。'
+}
+
+/** 取某个 系统×协议 组合的能力；未命中时返回保守兜底（不抛异常）。 */
+export function getSystemProtocolCapability(
+  osHint: OsHint,
+  protocol: ProtocolId
+): SystemProtocolCapability {
+  return SYSTEM_PROTOCOL_MATRIX[osHint]?.[protocol] ?? FALLBACK_CAPABILITY
 }
 
 /** 协议对应的默认 TCP 预检端口；rustdesk 主要走 21116/中继，返回 0 表示跳过预检 */
@@ -407,12 +552,15 @@ export interface WakeResult {
 
 /** contextBridge 暴露给渲染层的 API 契约 */
 export interface ElectronAPI {
-  discoveryStart: () => Promise<IpcResponse<{ subnet: string }>>
+  /** v1.4: 可传目标网段 CIDR（如 192.168.10.0/24）；不传则自动选主网段 */
+  discoveryStart: (targetCidr?: string) => Promise<IpcResponse<{ subnet: string }>>
   discoveryStop: () => Promise<IpcResponse<boolean>>
   onDiscoveryProgress: (callback: (progress: ScanProgress) => void) => () => void
+  discoverySubnets: () => Promise<IpcResponse<SubnetView[]>>
   deviceList: () => Promise<IpcResponse<Device[]>>
   deviceUpsert: (device: Device) => Promise<IpcResponse<Device>>
   deviceDelete: (id: string) => Promise<IpcResponse<boolean>>
+  deviceSetOs: (deviceId: string, osHint: OsHint) => Promise<IpcResponse<Device>>
   credentialSet: (input: CredentialInput) => Promise<IpcResponse<CredentialView>>
   credentialList: () => Promise<IpcResponse<CredentialView[]>>
   credentialDelete: (id: string) => Promise<IpcResponse<boolean>>

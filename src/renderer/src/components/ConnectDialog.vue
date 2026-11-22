@@ -4,6 +4,8 @@ import { ElMessage } from 'element-plus'
 import { api, unwrap } from '../api'
 import {
   CAPABILITY_MATRIX,
+  SYSTEM_PROTOCOL_MATRIX,
+  getSystemProtocolCapability,
   type Device,
   type PrecheckResult,
   type ProtocolAvailability,
@@ -46,6 +48,22 @@ const protocolLabels: Record<ProtocolId, string> = {
 }
 
 const caps = computed(() => CAPABILITY_MATRIX[protocol.value])
+
+/**
+ * v1.4-C: 系统×协议 能力矩阵提示。命中矩阵时剪贴板/文件传输的 note 以矩阵为准
+ *（更贴合该系统的真实限制），否则保留 CAPABILITY_MATRIX 的协议级 note。
+ */
+const sysCaps = computed(() => {
+  const device = props.device
+  if (!device) return null
+  const hit = SYSTEM_PROTOCOL_MATRIX[device.osHint]?.[protocol.value] !== undefined
+  const sys = getSystemProtocolCapability(device.osHint, protocol.value)
+  return {
+    prerequisite: sys.prerequisite,
+    clipboardNote: hit ? sys.clipboard.note : caps.value.clipboard.note,
+    fileTransferNote: hit ? sys.fileTransfer.note : caps.value.fileTransfer.note
+  }
+})
 
 /** 连接时实际使用的端口：VNC 优先扫描发现的显示号段，RDP 仅在发现 3389 时显式指定。 */
 const connectionPort = computed<number | undefined>(() => {
@@ -333,7 +351,7 @@ async function handleConnect(): Promise<void> {
         <div class="cap-row">
           <div class="cap-info">
             <span class="cap-name">共享剪贴板</span>
-            <span class="ld-muted cap-note">{{ caps.clipboard.note }}</span>
+            <span class="ld-muted cap-note">{{ sysCaps?.clipboardNote ?? caps.clipboard.note }}</span>
           </div>
           <el-switch
             v-if="caps.clipboard.supported"
@@ -346,7 +364,7 @@ async function handleConnect(): Promise<void> {
         <div class="cap-row">
           <div class="cap-info">
             <span class="cap-name">文件传输</span>
-            <span class="ld-muted cap-note">{{ caps.fileTransfer.note }}</span>
+            <span class="ld-muted cap-note">{{ sysCaps?.fileTransferNote ?? caps.fileTransfer.note }}</span>
           </div>
           <el-switch
             v-if="protocol === 'rdp'"
@@ -356,6 +374,7 @@ async function handleConnect(): Promise<void> {
           <span v-else-if="caps.fileTransfer.supported" class="ld-tag">客户端内</span>
           <span v-else class="ld-tag muted">用 SMB 通道</span>
         </div>
+        <p v-if="sysCaps" class="cap-prereq">连接前：{{ sysCaps.prerequisite }}</p>
         <p v-if="protocol === 'rdp' && driveRedirection" class="cap-warning">
           注意：磁盘重定向开启后，被控端可访问你本机映射的磁盘。仅对可信设备开启。
         </p>
@@ -516,6 +535,15 @@ async function handleConnect(): Promise<void> {
   border-radius: 6px;
   padding: 6px 8px;
   margin: 8px 0 0;
+}
+.cap-prereq {
+  font-size: 11px;
+  color: #1d4ed8;
+  background: #eff6ff;
+  border-radius: 6px;
+  padding: 6px 8px;
+  margin: 8px 0 0;
+  line-height: 1.5;
 }
 .notice {
   background: #f8fafc;

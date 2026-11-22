@@ -1,6 +1,8 @@
 import type {
   Device,
   DiscoverySource,
+  OsConfidence,
+  OsEvidence,
   OsHint,
   ProtocolId,
   SessionStatus
@@ -13,6 +15,12 @@ export interface DeviceRow {
   ip: string
   mac: string
   osHint: OsHint
+  /** v1.4: 置信度；老库缺省 'none' */
+  osConfidence: OsConfidence
+  /** v1.4: 识别依据 JSON；老库缺省 '[]' */
+  osEvidence: string
+  /** v1.4: 是否手动指定系统；老库缺省 0 */
+  osManual: number
   source: DiscoverySource
   availableProtocols: string
   detectedPorts: string
@@ -70,6 +78,9 @@ export function deviceToRow(device: Device): DeviceRow {
     ip: device.ip,
     mac: device.mac,
     osHint: device.osHint,
+    osConfidence: device.osConfidence ?? 'none',
+    osEvidence: JSON.stringify(device.osEvidence ?? []),
+    osManual: device.osManual ? 1 : 0,
     source: device.source,
     availableProtocols: JSON.stringify(device.availableProtocols),
     detectedPorts: JSON.stringify(device.detectedPorts ?? []),
@@ -108,12 +119,35 @@ export function rowToDevice(row: DeviceRow): Device {
   } catch {
     detectedPorts = []
   }
+  let osEvidence: OsEvidence[] = []
+  try {
+    const parsed: unknown = JSON.parse(row.osEvidence || '[]')
+    if (Array.isArray(parsed)) {
+      osEvidence = parsed.filter(
+        (item): item is OsEvidence =>
+          !!item &&
+          typeof item === 'object' &&
+          typeof (item as OsEvidence).source === 'string' &&
+          typeof (item as OsEvidence).osHint === 'string' &&
+          typeof (item as OsEvidence).detail === 'string'
+      )
+    }
+  } catch {
+    osEvidence = []
+  }
+  const confidence: OsConfidence =
+    row.osConfidence === 'high' || row.osConfidence === 'medium' || row.osConfidence === 'low'
+      ? row.osConfidence
+      : 'none'
   return {
     id: row.id,
     name: row.name,
     ip: row.ip,
     mac: row.mac,
     osHint: row.osHint,
+    osConfidence: confidence,
+    osEvidence,
+    osManual: row.osManual === 1,
     source: row.source,
     availableProtocols: protocols,
     detectedPorts,
