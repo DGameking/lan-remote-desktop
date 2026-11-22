@@ -2,10 +2,31 @@ import { randomUUID } from 'node:crypto'
 import type { ConnectRequest, ConnectResult, SessionRecord, SessionStatus } from '../../shared/types'
 import { CAPABILITY_MATRIX } from '../../shared/types'
 import { logger, scopedLogger } from '../logger'
+import { takeLastLaunchedPid } from '../protocols/base'
 import { getAdapter } from '../protocols/registry'
 import { decryptPassword } from '../store/crypto'
 import { getSettings, getStore, now, rowToDevice } from '../store'
 import { shouldReuseSavedCredential } from './credential-policy'
+import { isPidAlive } from './process-liveness'
+
+// 保持既有测试/调用方的导入路径兼容；进程检测实现已抽到 process-liveness.ts 供 rdp 清理复用。
+export { isPidAlive, taskListCsvShowsPid } from './process-liveness'
+
+/** 外部客户端进程轮询间隔（毫秒） */
+const PROCESS_POLL_INTERVAL_MS = 4000
+/** 调起后宽限期：mstsc 等客户端启动较慢，10 秒内不做存活判定，避免误回收 */
+const PROCESS_START_GRACE_MS = 10000
+/** 连续 N 次检测不到进程才判定退出（防 mstsc 单实例启动时的假退出） */
+const EXIT_CONFIRM_STREAK = 2
+
+/** startedAt→endedAt 的整秒数；任一时间无效时返回 undefined（UI 应显示"时长不可测"）。 */
+export function computeDurationSec(startedAt: string, endedAt: string): number | undefined {
+  const start = Date.parse(startedAt)
+  const end = Date.parse(endedAt)
+  if (!Number.isFinite(start) || !Number.isFinite(end)) return undefined
+  const sec = Math.floor((end - start) / 1000)
+  return sec >= 0 ? sec : undefined
+}
 
 /** 根据协议与本次会话开关，生成能力回显文案 */
 function describeCapabilities(request: ConnectRequest): string[] {
@@ -43,10 +64,28 @@ function classifyConnectError(message: string): string {
   return 'adapter_error'
 }
 
-/** 会话状态机 + 连接历史。外部客户端一旦调起即视为 connected，本应用不接管远端会话生命周期。 */
+/**
+ * 会话状态机 + 连接历史。
+ * v1.5-P0-2: 调起外部客户端后进入 connected，轮询其退出后自动 ended 回收；
+ * 会话时长按 startedAt→endedAt 计算，PID 不可测时显式标记 durationUnavailable。
+ */
 export class SessionManager {
   private state: SessionStatus = 'idle'
   private current: SessionRecord | null = null
+
+  /** 调起成功后由 index.ts 注入：隐藏主窗口并退到托盘驻留 */
+  private onSessionLaunched?: () => void
+
+  private monitorTimer: ReturnType<typeof setInterval> | null = null
+  private monitorPid: number | null = null
+  private monitorStartedAt = 0
+  private missingStreak = 0
+  private checking = false
+
+  /** 注入"已调起外部客户端"回调；回调异常被吞掉，绝不影响 connect 结果。 */
+  setSessionLaunchedHandler(handler: () => void): void {
+    this.onSessionLaunched = handler
+  }
 
   getStatus(): { state: SessionStatus; current: SessionRecord | null } {
     return { state: this.state, current: this.current }
@@ -56,7 +95,120 @@ export class SessionManager {
     return getStore().listSessions()
   }
 
+  /** 停止进程存活轮询并清空检测状态（不做任何持久化）。 */
+  private stopProcessMonitor(): void {
+    if (this.monitorTimer !== null) {
+      clearInterval(this.monitorTimer)
+      this.monitorTimer = null
+    }
+    this.monitorPid = null
+    this.monitorStartedAt = 0
+    this.missingStreak = 0
+    this.checking = false
+  }
+
+  /** 调起成功后开始轮询外部进程；PID 无效时不启动（仅由用户/托盘主动结束）。 */
+  private startProcessMonitor(pid: number): void {
+    this.stopProcessMonitor()
+    if (!Number.isInteger(pid) || pid <= 0) {
+      scopedLogger('session').warn('外部进程 PID 无效，跳过自动存活检测，会话将由用户主动结束')
+      return
+    }
+    this.monitorPid = pid
+    this.monitorStartedAt = Date.now()
+    this.missingStreak = 0
+    this.monitorTimer = setInterval(() => {
+      void this.checkExternalProcess()
+    }, PROCESS_POLL_INTERVAL_MS)
+    // 轮询句柄不应阻止应用退出
+    const timer = this.monitorTimer as unknown as { unref?: () => void }
+    timer.unref?.()
+  }
+
+  /** 单次存活检测：宽限期内直接跳过；连续两次检测不到才判定进程退出。 */
+  private async checkExternalProcess(): Promise<void> {
+    if (this.checking) return
+    const pid = this.monitorPid
+    if (pid === null || this.state !== 'connected') return
+    if (Date.now() - this.monitorStartedAt < PROCESS_START_GRACE_MS) return
+
+    this.checking = true
+    try {
+      const alive = await isPidAlive(pid)
+      if (alive) {
+        this.missingStreak = 0
+        return
+      }
+      this.missingStreak += 1
+      scopedLogger('session').info('外部进程存活检测：本次未找到进程', {
+        streak: this.missingStreak,
+        required: EXIT_CONFIRM_STREAK
+      })
+      if (this.missingStreak >= EXIT_CONFIRM_STREAK) {
+        this.endSession('process-exit')
+      }
+    } catch (error) {
+      // 检测命令异常时按"仍存活"处理，宁可不回收也不误结束用户会话
+      scopedLogger('session').warn('外部进程存活检测异常，本次忽略', error)
+    } finally {
+      this.checking = false
+    }
+  }
+
+  /**
+   * v1.5-P0-2: 主动结束当前会话并回收状态。
+   * @param reason 'manual'（UI/托盘主动）或 'process-exit'（检测到外部客户端退出）
+   */
+  endSession(reason: 'manual' | 'process-exit' = 'manual'): boolean {
+    const log = scopedLogger('session')
+    if (this.state === 'idle' || !this.current) return false
+    // failed 是终态：连接失败记录必须保留 failed 供历史/诊断，不能被"结束会话"改写成 ended。
+    // 调起失败时本就没有存活进程可回收，直接短路即可。
+    if (this.state === 'failed') return false
+    const record = this.current
+    this.stopProcessMonitor()
+
+    const endedAt = now()
+    const durationSec = computeDurationSec(record.startedAt, endedAt)
+    const pid = record.externalPid
+    const hasValidPid = typeof pid === 'number' && Number.isInteger(pid) && pid > 0
+    // 无有效 PID 或时间不可解析时不写 0，显式标记"不可测"，避免 UI 误显示"0 秒"
+    const durationUnavailable = !hasValidPid || durationSec === undefined
+
+    const ended: SessionRecord = {
+      ...record,
+      status: 'ended',
+      endedAt,
+      ...(durationSec !== undefined ? { durationSec } : {}),
+      ...(durationUnavailable ? { durationUnavailable: true } : {})
+    }
+    getStore().updateSession(ended)
+    this.state = 'idle'
+    this.current = null
+
+    log.event({
+      level: 'INFO',
+      event: 'session.ended',
+      traceId: record.id,
+      context: {
+        reason,
+        protocol: record.protocol,
+        hasPid: hasValidPid,
+        durationSec: durationSec ?? null,
+        durationUnavailable
+      }
+    })
+    return true
+  }
+
   async connect(request: ConnectRequest): Promise<ConnectResult> {
+    // in-flight 去重：连接串行化，避免重复点击并发拉起多个外部客户端
+    if (this.state === 'connecting') {
+      throw new Error('已有连接正在进行中，请勿重复点击')
+    }
+    // 上一条仍 connected 的会话先回收（含停止旧轮询），防止多个监听器并存
+    if (this.state === 'connected') this.endSession('manual')
+
     const sessionId = randomUUID()
     const t0 = Date.now()
     const traceId = sessionId
@@ -73,7 +225,9 @@ export class SessionManager {
       status: 'connecting',
       startedAt: now(),
       endedAt: '',
-      errorMessage: ''
+      errorMessage: '',
+      // 本地会话元数据：设备被删除后历史仍可用此 ip 一键重连
+      ip: request.ip
     }
     getStore().addSession(record)
     this.state = 'connecting'
@@ -124,7 +278,7 @@ export class SessionManager {
           })
           if (reuse) {
             try {
-              resolved.password = decryptPassword(saved.encryptedPassword)
+              resolved.password = await decryptPassword(saved.encryptedPassword)
               // 用户下次不填账号也能直连：把保存的账号一并回填，供 rdp 写入 username:s:
               if (!resolved.username && saved.username) {
                 resolved.username = saved.username
@@ -148,12 +302,27 @@ export class SessionManager {
         context: { reused }
       })
 
+      // 先清空可能残留的 PID（如之前的文件传输调起），确保取到的是本次调起的进程。
+      takeLastLaunchedPid()
       const message = await getAdapter(request.protocol).connect(resolved)
+      const launchedPid = takeLastLaunchedPid()
+      if (typeof launchedPid === 'number' && Number.isInteger(launchedPid) && launchedPid > 0) {
+        record.externalPid = launchedPid
+      }
       record.status = 'connected'
-      record.endedAt = now()
+      // v1.5: 不再于"已调起"时写 endedAt，否则 startedAt→endedAt 时长恒为 0。
+      record.endedAt = ''
       getStore().updateSession(record)
       this.state = 'connected'
       this.current = record
+      this.startProcessMonitor(launchedPid ?? 0)
+
+      // 调起成功后退到托盘驻留（回调由 index.ts 注入；异常不影响连接结果）
+      try {
+        this.onSessionLaunched?.()
+      } catch (error) {
+        logger.warn('会话调起后的托盘隐藏回调执行失败', error)
+      }
 
       log.event({
         level: 'INFO',
@@ -168,6 +337,7 @@ export class SessionManager {
       return { ok: true, message, sessionId, launched: true, capabilities: describeCapabilities(resolved) }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
+      this.stopProcessMonitor()
       record.status = 'failed'
       record.endedAt = now()
       record.errorMessage = message

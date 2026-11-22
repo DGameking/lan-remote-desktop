@@ -2,7 +2,13 @@
 // 真实运行时绝不会加载此文件（仅 vitest.config.ts 的 alias 指向它）。
 const store = new Map<string, unknown>()
 
+// v1.5: 异步 safeStorage API（Electron 45 主路径）+ 同步 API（旧环境降级路径）。
+// 测试用简单可逆编码模拟加解密；密钥轮换标记恒为 false。
 export const safeStorage = {
+  isAsyncEncryptionAvailable: () => Promise.resolve(true),
+  encryptStringAsync: (value: string) => Promise.resolve(Buffer.from(value, 'utf8')),
+  decryptStringAsync: (value: Buffer) =>
+    Promise.resolve({ result: value.toString('utf8'), shouldReEncrypt: false }),
   isEncryptionAvailable: () => true,
   encryptString: (value: string) => Buffer.from(value, 'utf8'),
   decryptString: (value: Buffer) => value.toString('utf8')

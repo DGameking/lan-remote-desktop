@@ -11,7 +11,7 @@ import {
   type WakeResult
 } from '../../shared/types'
 import type { ScanManager } from '../discovery/manager'
-import { probePortWithRetry } from '../discovery/precheck'
+import { probePortWithRetry, runFullPrecheck } from '../discovery/precheck'
 import { detectSubnets } from '../discovery/subnet'
 import { broadcastForCidr, sendWakeOnLan } from '../discovery/wol'
 import { logger, scopedLogger } from '../logger'
@@ -156,7 +156,7 @@ export function registerIpc(
   ipcMain.handle(IPC_CHANNELS.CREDENTIAL_SET, async (_event, payload: unknown): Promise<IpcResponse> => {
     try {
       const input = validateCredentialInput(payload)
-      const encrypted = encryptPassword(input.password)
+      const encrypted = await encryptPassword(input.password)
       const existing = getStore()
         .listCredentials()
         .find((item) => item.deviceId === input.deviceId && item.protocol === input.protocol)
@@ -236,8 +236,10 @@ export function registerIpc(
             '该协议跳过端口预检'
           )
         }
-        const result = await probePortWithRetry(rawIp, port)
-        // 事件链埋点：IP 交给 scopedLogger 内部 redact 统一处理，此处只传原始值
+        // v1.5-P0-4: 用完整预检（TCP 端口 + ICMP 存活）产出三类可执行结论
+        const result = await runFullPrecheck(rawIp, rawProtocol, port)
+        // 事件链埋点：IP 交给 scopedLogger 内部 redact 统一处理，此处只传原始值；
+        // 结论为枚举 token（无用户数据），可安全入日志供诊断证据回流。
         scopedLogger('ipc').event({
           level: 'INFO',
           event: 'precheck.done',
@@ -246,7 +248,9 @@ export function registerIpc(
             port,
             reachable: result.reachable,
             latencyMs: result.latencyMs,
-            skipped: result.skipped ?? false
+            skipped: result.skipped ?? false,
+            conclusion: result.conclusion ?? 'unknown',
+            icmpReachable: result.icmpReachable ?? null
           }
         })
         return result.reachable ? ok(result) : ok(result, precheckFailureHint(port))
@@ -261,6 +265,40 @@ export function registerIpc(
       return ok(sessionManager.listHistory())
     } catch (error) {
       return errorResponse('session:list', error)
+    }
+  })
+
+  // v1.5-P0-2: 主动结束当前会话并回收（托盘/UI 共用）
+  ipcMain.handle(IPC_CHANNELS.SESSION_END, async (): Promise<IpcResponse> => {
+    try {
+      const ended = sessionManager.endSession()
+      return ok(ended, ended ? '会话已结束' : '当前没有进行中的会话')
+    } catch (error) {
+      return errorResponse('session:end', error)
+    }
+  })
+
+  // v1.5-P0-3: 清空连接历史（对应 REQ-009）
+  ipcMain.handle(IPC_CHANNELS.SESSION_CLEAR, async (): Promise<IpcResponse> => {
+    try {
+      getStore().clearSessions()
+      return ok(true, '连接历史已清空')
+    } catch (error) {
+      return errorResponse('session:clear', error)
+    }
+  })
+
+  // v1.5-P0-2: 托盘"回到主控"唤出主窗口
+  ipcMain.handle(IPC_CHANNELS.APP_SHOW, async (): Promise<IpcResponse> => {
+    try {
+      const win = getWindow()
+      if (!win) return ok(false, '主窗口尚未就绪')
+      if (win.isMinimized()) win.restore()
+      win.show()
+      win.focus()
+      return ok(true)
+    } catch (error) {
+      return errorResponse('app:show', error)
     }
   })
 
@@ -335,6 +373,12 @@ export function registerIpc(
       const detectedPorts = device?.detectedPorts ?? []
       const built = buildManageUrl({ ip, port, detectedPorts })
       if (!built.ok || !built.url) return fail(built.message)
+      // v1.5-P1 纵深防御：detectedPorts 可由渲染层 upsert 写入，信任锚不绝对。
+      // 打开前由主进程实时 TCP 探测该 IP:port，确认服务确实存活，堵住"伪造端口借道打开"的 SSRF 变体。
+      const live = await probePortWithRetry(ip, port)
+      if (!live.reachable) {
+        return fail('该管理端口当前未响应，已拒绝打开（可能是设备已离线或端口记录已过期）')
+      }
       await shell.openExternal(built.url)
       const result: ServerLinkResult = { ok: true, message: built.message, url: built.url }
       return ok(result)

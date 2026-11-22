@@ -49,6 +49,48 @@ export interface SessionRow {
   startedAt: string
   endedAt: string
   errorMessage: string
+  /** v1.5: 外部客户端进程 PID；0/undefined 表示调起失败或使用了协议链接（无 PID） */
+  externalPid?: number
+  /** v1.5: 会话时长（秒），由 startedAt→endedAt 计算 */
+  durationSec?: number
+  /** v1.5: 时长不可可靠测量时置 true，UI 应显示"时长不可测"而非 0 */
+  durationUnavailable?: boolean
+  /** v1.5: 本次连接的目标 IP（本地元数据，设备删除后历史仍可一键重连） */
+  ip?: string
+}
+
+/**
+ * 把存储层读出的会话行规范化为契约语义：
+ * - DB 列无值时读出的 0/null 归一为 undefined；
+ * - durationUnavailable 兼容 0/1（SQL）与 boolean（JSON）两种落盘形态。
+ * 老库缺列时由各 store 的迁移/默认值补齐，本函数保证 UI 拿到的恒为规范值。
+ */
+export function normalizeSessionRow(row: SessionRow): SessionRow {
+  const externalPid =
+    typeof row.externalPid === 'number' && Number.isInteger(row.externalPid) && row.externalPid > 0
+      ? row.externalPid
+      : undefined
+  // 0 是 DB 列缺省值，视为"无时长"；真实会话时长恒为正数
+  const durationSec =
+    typeof row.durationSec === 'number' && Number.isFinite(row.durationSec) && row.durationSec > 0
+      ? row.durationSec
+      : undefined
+  const rawUnavailable = row.durationUnavailable as boolean | number | undefined
+  const durationUnavailable = rawUnavailable === true || rawUnavailable === 1
+  const ip = typeof row.ip === 'string' && row.ip ? row.ip : undefined
+  // 先剔除旧值，再按规范条件写回，避免把 0/1 原样透传给 UI
+  const base: SessionRow = { ...row }
+  delete base.externalPid
+  delete base.durationSec
+  delete base.durationUnavailable
+  delete base.ip
+  return {
+    ...base,
+    ...(externalPid !== undefined ? { externalPid } : {}),
+    ...(durationSec !== undefined ? { durationSec } : {}),
+    ...(durationUnavailable ? { durationUnavailable: true } : {}),
+    ...(ip !== undefined ? { ip } : {})
+  }
 }
 
 /** 存储驱动契约：SQLite 与 JSON 降级实现同一套接口 */
@@ -63,6 +105,8 @@ export interface Store {
   listSessions(): SessionRow[]
   addSession(row: SessionRow): void
   updateSession(row: SessionRow): void
+  /** v1.5-P0-3: 清空连接历史（对应 REQ-009） */
+  clearSessions(): void
   getSetting(key: string): string | undefined
   setSetting(key: string, value: string): void
 }

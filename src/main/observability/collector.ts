@@ -141,7 +141,7 @@ export async function collectDiagnosticsInput(options?: {
       uptimeSeconds: Math.floor(process.uptime()),
       storeMode: store.mode(),
       subnet,
-      safeStorageAvailable: isEncryptionAvailable()
+      safeStorageAvailable: await isEncryptionAvailable()
     },
     settings: {
       complianceAccepted: settings.complianceAccepted,

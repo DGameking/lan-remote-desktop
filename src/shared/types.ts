@@ -55,7 +55,8 @@ export interface ServiceFingerprint {
 export type DiscoverySource = 'subnet' | 'mdns' | 'arp' | 'manual'
 
 /** 会话状态机 */
-export type SessionStatus = 'idle' | 'connecting' | 'connected' | 'failed'
+/** v1.5: ended = 外部客户端已退出并回收（原 connected 表示"已调起"） */
+export type SessionStatus = 'idle' | 'connecting' | 'connected' | 'failed' | 'ended'
 
 /** 设备实体 */
 export interface Device {
@@ -111,6 +112,14 @@ export interface SessionRecord {
   startedAt: string
   endedAt: string
   errorMessage: string
+  /** v1.5: 外部客户端进程 PID（用于存活检测与回收；调起失败时无值） */
+  externalPid?: number
+  /** v1.5: 会话时长（秒）。外部进程退出后按 startedAt→endedAt 计算 */
+  durationSec?: number
+  /** v1.5: 无法可靠测量时长时置 true，UI 应显示"时长不可测"而非 0 */
+  durationUnavailable?: boolean
+  /** v1.5: 本次连接的目标 IP（本地会话元数据；设备被删除后历史仍可一键重连） */
+  ip?: string
 }
 
 /** 应用设置 */
@@ -214,6 +223,9 @@ export interface ProtocolCapabilities {
 }
 
 /** 连接前 TCP 端口预检结果 */
+/** v1.5-P0-4: 连通性自检的可执行结论（REQ-011 三类结论 + 可达） */
+export type PrecheckConclusion = 'reachable' | 'offline' | 'port_closed' | 'firewall_or_auth' | 'unknown'
+
 export interface PrecheckResult {
   ip: string
   port: number
@@ -221,6 +233,12 @@ export interface PrecheckResult {
   latencyMs: number
   /** rustdesk 等不做 TCP 预检的协议，标记跳过，UI 不应显示为「不可达」 */
   skipped?: boolean
+  /** v1.5: 三类连通性结论；缺省时 UI 回退到 reachable 二元显示 */
+  conclusion?: PrecheckConclusion
+  /** v1.5: 针对结论的可执行行动指引（如"到被控端开启远程桌面"） */
+  actions?: string[]
+  /** v1.5: ICMP 存活探测结果（true=主机在线但端口不通；false=主机不在线） */
+  icmpReachable?: boolean
 }
 
 /** 文件传输目标（SMB 共享） */
@@ -266,6 +284,12 @@ export const IPC_CHANNELS = {
   SESSION_CONNECT: 'session:connect',
   SESSION_PRECHECK: 'session:precheck',
   SESSION_LIST: 'session:list',
+  /** v1.5: 主动结束当前会话并回收托盘（对应 REQ-010 断开回收） */
+  SESSION_END: 'session:end',
+  /** v1.5: 清空连接历史（对应 REQ-009） */
+  SESSION_CLEAR: 'session:clear',
+  /** v1.5: 托盘"回到主控"唤出主窗口 */
+  APP_SHOW: 'app:show',
   FILE_TRANSFER_OPEN: 'file-transfer:open',
   APP_GET_STATUS: 'app:getStatus',
   APP_GET_DIAGNOSTICS: 'app:getDiagnostics',
@@ -567,6 +591,12 @@ export interface ElectronAPI {
   sessionConnect: (request: ConnectRequest) => Promise<IpcResponse<ConnectResult>>
   sessionPrecheck: (ip: string, protocol: ProtocolId, port?: number) => Promise<IpcResponse<PrecheckResult>>
   sessionList: () => Promise<IpcResponse<SessionRecord[]>>
+  /** v1.5: 结束当前会话、清理托盘状态并把会话标记为 ended */
+  sessionEnd: () => Promise<IpcResponse<boolean>>
+  /** v1.5: 清空连接历史 */
+  sessionClear: () => Promise<IpcResponse<boolean>>
+  /** v1.5: 唤起主窗口（托盘"回到主控"） */
+  appShow: () => Promise<IpcResponse<boolean>>
   fileTransferOpen: (target: FileTransferTarget) => Promise<IpcResponse<FileTransferResult>>
   appGetStatus: () => Promise<IpcResponse<AppStatus>>
   appGetDiagnostics: () => Promise<IpcResponse<DiagnosticsSnapshot>>

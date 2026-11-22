@@ -7,6 +7,7 @@ import {
   SYSTEM_PROTOCOL_MATRIX,
   getSystemProtocolCapability,
   type Device,
+  type PrecheckConclusion,
   type PrecheckResult,
   type ProtocolAvailability,
   type ProtocolId
@@ -45,6 +46,15 @@ const protocolLabels: Record<ProtocolId, string> = {
   rdp: 'RDP（Windows）',
   vnc: 'VNC（macOS / Linux / 飞牛OS）',
   rustdesk: 'RustDesk（可选）'
+}
+
+/** v1.5 P0-4: 预检结论的人话标签，避免只显示"通/不通"。 */
+const conclusionLabels: Record<PrecheckConclusion, string> = {
+  reachable: '可连接',
+  offline: '设备不在线',
+  port_closed: '服务端口未开',
+  firewall_or_auth: '防火墙拦截或认证问题',
+  unknown: '无法确定'
 }
 
 const caps = computed(() => CAPABILITY_MATRIX[protocol.value])
@@ -321,6 +331,20 @@ async function handleConnect(): Promise<void> {
         <el-button link size="small" :loading="prechecking" @click="runPrecheck">重新检测</el-button>
       </div>
 
+      <!-- v1.5 P0-4: 自检结论 + 可执行指引；仅非"可连接"且有结论时展示 -->
+      <div
+        v-if="precheck && precheck.conclusion && precheck.conclusion !== 'reachable'"
+        class="conclusion-box"
+        :class="precheck.conclusion"
+      >
+        <div class="conclusion-title">自检结论：{{ conclusionLabels[precheck.conclusion] }}</div>
+        <div v-if="precheck.actions && precheck.actions.length" class="conclusion-actions">
+          <div v-for="(action, idx) in precheck.actions" :key="idx" class="conclusion-action">
+            → {{ action }}
+          </div>
+        </div>
+      </div>
+
       <div v-if="protocol === 'rustdesk'" class="field">
         <label>RustDesk 设备 ID（留空则使用 IP）</label>
         <el-input v-model="rustdeskId" placeholder="可选，例如 123456789" clearable />
@@ -495,6 +519,37 @@ async function handleConnect(): Promise<void> {
 }
 .precheck-bar .el-button {
   margin-left: auto;
+}
+/* v1.5 P0-4: 自检结论提示框，与 cap-prereq / troubleshoot-box 风格自洽 */
+.conclusion-box {
+  border: 1px solid #bfdbfe;
+  border-radius: 8px;
+  background: #eff6ff;
+  color: #1d4ed8;
+  padding: 9px 12px;
+  font-size: 12px;
+  line-height: 1.7;
+}
+.conclusion-box.offline,
+.conclusion-box.port_closed {
+  border-color: #fed7aa;
+  background: #fff7ed;
+  color: #9a3412;
+}
+.conclusion-box.firewall_or_auth,
+.conclusion-box.unknown {
+  border-color: #fde68a;
+  background: #fffbeb;
+  color: #b45309;
+}
+.conclusion-title {
+  font-weight: 700;
+}
+.conclusion-actions {
+  margin-top: 4px;
+}
+.conclusion-action {
+  word-break: break-word;
 }
 .capability-box {
   background: #f8fafc;

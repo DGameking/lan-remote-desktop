@@ -1,7 +1,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { logger } from '../logger'
-import type { CredentialRow, DeviceRow, SessionRow, Store } from './types'
+import { normalizeSessionRow, type CredentialRow, type DeviceRow, type SessionRow, type Store } from './types'
 
 interface JsonData {
   devices: DeviceRow[]
@@ -49,7 +49,8 @@ export class JsonStore implements Store {
                 }))
               : [],
             credentials: Array.isArray(raw.credentials) ? raw.credentials : [],
-            sessions: Array.isArray(raw.sessions) ? raw.sessions : [],
+            // 老数据缺 v1.5 会话运行期字段时补默认值，避免 undefined 落库
+            sessions: Array.isArray(raw.sessions) ? raw.sessions.map(normalizeSessionRow) : [],
             settings: raw.settings && typeof raw.settings === 'object' ? raw.settings : {}
           }
         }
@@ -109,6 +110,7 @@ export class JsonStore implements Store {
 
   listSessions(): SessionRow[] {
     return [...this.data.sessions]
+      .map(normalizeSessionRow)
       .sort((a, b) => b.startedAt.localeCompare(a.startedAt))
       .slice(0, 200)
   }
@@ -124,6 +126,11 @@ export class JsonStore implements Store {
   updateSession(row: SessionRow): void {
     const index = this.data.sessions.findIndex((item) => item.id === row.id)
     if (index >= 0) this.data.sessions[index] = row
+    this.persist()
+  }
+
+  clearSessions(): void {
+    this.data.sessions = []
     this.persist()
   }
 

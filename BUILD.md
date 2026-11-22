@@ -25,13 +25,13 @@ set ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/
 | `npm run build` | 三进程构建到 `out/`（main / preload / renderer） |
 | `npm run dist` | 构建 + electron-builder 打包到 `dist/`（NSIS + portable，x64） |
 
-打包产物：`dist/LanDesk-1.4.0-setup-x64.exe`、`dist/LanDesk-1.4.0-portable-win-x64.exe`。
+打包产物：`dist/LanDesk-1.5.0-setup-x64.exe`、`dist/LanDesk-1.5.0-portable-win-x64.exe`。
 CI 中调用 `npm run dist -- --x64` 显式指定架构；本地打包请保持 windows x64。
 
 ## 4. CI / Release
 - 工作流：`.github/workflows/build.yml`，`on: push tags 'v*'` 或手动 `workflow_dispatch`。
 - 质量硬卡点（四项，全部必须通过）：`typecheck` + `typecheck:vue` + `test:unit` + `dist` 构建。**lint 非卡点**（MVP 不加 eslint 配置，typecheck 已覆盖类型安全）。
-- 发布：tag `v1.4.0` 触发 `windows-latest` 构建，`softprops/action-gh-release` 上传两个 exe 与 `SHA256SUMS.txt`。
+- 发布：tag `v1.5.0` 触发 `windows-latest` 构建，`softprops/action-gh-release` 上传两个 exe 与 `SHA256SUMS.txt`。
 - 校验值：CI 用 PowerShell `Get-FileHash -Algorithm SHA256` 生成 `dist/SHA256SUMS.txt`。
 
 ## 5. 存储与降级
@@ -47,11 +47,11 @@ CI 中调用 `npm run dist -- --x64` 显式指定架构；本地打包请保持 
 - RustDesk 为可选外部调起，依赖本机已安装官方客户端。
 - 共享剪贴板/磁盘重定向请在可信设备间开启；标准 VNC 无文件传输（用 SMB 通道）；SMB 传文件需对端开启共享并授权；跨设备常驻剪贴板同步不在范围。
 
-## 7. 验证状态（2026-11-20 全量通过）
+## 7. 验证状态（2026-11-22 v1.5.0 全量通过）
 - `npm run typecheck` ✓（主进程）
 - `npm run typecheck:vue` ✓（渲染层）
-- `npx vitest run` ✓ 169/169（12 个测试文件）
+- `npm run test:unit` ✓ **321/321（23 个测试文件）**；v1.3 基线 169 → v1.4 218 → v1.5 首轮 301 → 发布前修复轮 321
 - `npm run build` ✓（main / preload / renderer 三进程）
-- `npm run dist -- --x64 --publish never` ✓
-- 独立安全与代码审查：未发现 P0/P1，1 项 P2 已修复复验。
-- 产物：`dist/LanDesk-1.4.0-setup-x64.exe`、`dist/LanDesk-1.4.0-portable-win-x64.exe`、`dist/SHA256SUMS.txt`。
+- `npm run dist -- --x64 --publish never` ✓（electron 45.4.1）
+- 独立审校：v1.4 全面审校发现 5 项 P0，v1.5 全部清零；发布前复核又发现并修复 3 处缺陷（ping 离线误判、rdp 临时文件清理未兑现承诺、failed 会话被误改写），见 `docs/14`、`RELEASE_NOTES`。
+- 产物：`dist/LanDesk-1.5.0-setup-x64.exe`、`dist/LanDesk-1.5.0-portable-win-x64.exe`、`dist/SHA256SUMS.txt`（重新打包后生成）。

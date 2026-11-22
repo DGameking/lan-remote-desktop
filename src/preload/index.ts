@@ -28,6 +28,9 @@ const api: ElectronAPI = {
   sessionPrecheck: (ip, protocol, port) =>
     ipcRenderer.invoke(IPC_CHANNELS.SESSION_PRECHECK, ip, protocol, port),
   sessionList: () => ipcRenderer.invoke(IPC_CHANNELS.SESSION_LIST),
+  sessionEnd: () => ipcRenderer.invoke(IPC_CHANNELS.SESSION_END),
+  sessionClear: () => ipcRenderer.invoke(IPC_CHANNELS.SESSION_CLEAR),
+  appShow: () => ipcRenderer.invoke(IPC_CHANNELS.APP_SHOW),
   fileTransferOpen: (target) => ipcRenderer.invoke(IPC_CHANNELS.FILE_TRANSFER_OPEN, target),
   appGetStatus: () => ipcRenderer.invoke(IPC_CHANNELS.APP_GET_STATUS),
   appGetDiagnostics: () => ipcRenderer.invoke(IPC_CHANNELS.APP_GET_DIAGNOSTICS),

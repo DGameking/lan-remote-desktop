@@ -10,6 +10,8 @@ const emit = defineEmits<{
   (e: 'file-transfer', device: Device): void
   (e: 'refresh'): void
   (e: 'set-os', payload: { device: Device; osHint: OsHint }): void
+  (e: 'startScan'): void
+  (e: 'gotoSettings'): void
 }>()
 
 const viewMode = ref<'card' | 'table'>('card')
@@ -127,7 +129,22 @@ async function wakeDevice(device: Device): Promise<void> {
     </div>
 
     <el-empty v-if="!props.loading && props.devices.length === 0" description="暂无设备，先扫描局域网或在设置中手动添加 IP">
-      <el-button type="primary" @click="emit('refresh')">重新加载</el-button>
+      <div class="empty-actions">
+        <el-button type="primary" @click="emit('startScan')">开始扫描</el-button>
+        <el-button @click="emit('refresh')">刷新列表</el-button>
+        <el-button plain @click="emit('gotoSettings')">手动添加设备</el-button>
+      </div>
+      <div class="empty-troubleshoot">
+        <el-collapse>
+          <el-collapse-item title="扫不到？三步排查" name="guide">
+            <ol class="empty-guide-list">
+              <li>确认被控机和本机连接在同一路由器 / 同一网段。</li>
+              <li>确认被控端已开启远程桌面 / 屏幕共享 / VNC 服务。</li>
+              <li>确认被控端防火墙已放行 3389（RDP）或 5900（VNC）端口。</li>
+            </ol>
+          </el-collapse-item>
+        </el-collapse>
+      </div>
     </el-empty>
 
     <div v-else-if="viewMode === 'card'" class="card-grid">
@@ -321,6 +338,25 @@ async function wakeDevice(device: Device): Promise<void> {
   display: flex;
   gap: 8px;
   flex-shrink: 0;
+}
+.empty-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px;
+}
+.empty-troubleshoot {
+  width: 360px;
+  max-width: 100%;
+  margin: 14px auto 0;
+  text-align: left;
+}
+.empty-guide-list {
+  margin: 0;
+  padding-left: 20px;
+  font-size: 12px;
+  line-height: 1.9;
+  color: #526074;
 }
 .card-grid {
   display: grid;

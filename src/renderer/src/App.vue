@@ -199,6 +199,8 @@ onUnmounted(() => {
               @file-transfer="transferDevice = $event"
               @refresh="refreshDevices"
               @set-os="handleSetOs($event.device, $event.osHint)"
+              @start-scan="startScan"
+              @goto-settings="activeTab = 'settings'"
             />
           </div>
         </el-tab-pane>

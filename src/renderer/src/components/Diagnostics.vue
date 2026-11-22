@@ -41,13 +41,15 @@ const sessionStatusLabels: Record<SessionStatus, string> = {
   idle: '空闲',
   connecting: '连接中',
   connected: '已调起',
-  failed: '失败'
+  failed: '失败',
+  ended: '已结束'
 }
 const sessionStatusClass: Record<SessionStatus, string> = {
   idle: 'muted',
   connecting: '',
   connected: 'success',
-  failed: 'danger'
+  failed: 'danger',
+  ended: 'muted'
 }
 
 function errorText(error: unknown): string {

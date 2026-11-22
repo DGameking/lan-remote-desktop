@@ -5,7 +5,9 @@ import type { ConnectRequest } from '../../shared/types'
 import { logger, scopedLogger } from '../logger'
 import { getSettings } from '../store'
 import { generateRdpPasswordHex, isRdpPasswordHex } from '../store/dpapi'
+import { isPidAlive } from '../session/process-liveness'
 import { availability, spawnDetached, type ProtocolAdapter } from './base'
+import { scheduleTempFileCleanup, removeTempFile } from './tempfile'
 
 const RDP_PORT = 3389
 
@@ -142,22 +144,22 @@ export class RdpAdapter implements ProtocolAdapter {
     fs.writeFileSync(tempFile, content, { encoding: 'utf8', mode: 0o600 })
 
     try {
-      await spawnDetached(mstscPath(), [tempFile])
+      const launched = await spawnDetached(mstscPath(), [tempFile])
       logger.info('已调起 mstsc', {
         ip: request.ip,
         rdpFile: tempFile,
         clipboard,
         driveRedirection,
-        autoLogin: !!passwordHex
+        autoLogin: !!passwordHex,
+        pid: launched.pid
       })
-      // mstsc 启动后会读取该文件；延时清理，避免密文长期残留在 %TEMP%
-      setTimeout(() => {
-        try {
-          fs.unlinkSync(tempFile)
-        } catch {
-          // 清理失败静默忽略
-        }
-      }, 8000)
+      // v1.5-R2-5：进程退出后清理 + 30 秒兜底；失败记 WARN（哈希脱敏，不写路径）。
+      // 替代原固定 8 秒静默清理——8 秒可能早于 mstsc 读完文件，且失败无声无息。
+      scheduleTempFileCleanup({
+        filePath: tempFile,
+        pid: launched.pid,
+        isAlive: isPidAlive
+      })
 
       const capabilityNotes: string[] = [
         clipboard ? '剪贴板共享：已开启' : '剪贴板共享：已关闭',
@@ -173,11 +175,8 @@ export class RdpAdapter implements ProtocolAdapter {
       }
       return `已调起 Windows 远程桌面，请在弹出的窗口中手动输入账号密码。${capabilityNotes.join('；')}。`
     } catch (error) {
-      try {
-        fs.unlinkSync(tempFile)
-      } catch {
-        // 忽略清理失败
-      }
+      // 调起失败立即清理（幂等），失败由 removeTempFile 内部记 WARN
+      removeTempFile(tempFile)
       throw new Error(
         `调起 mstsc 失败：${error instanceof Error ? error.message : String(error)}。若目标无法连接，请确认被控端为 Windows 专业版/企业版且已启用远程桌面。`
       )

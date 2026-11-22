@@ -3,7 +3,7 @@ import path from 'node:path'
 import { app } from 'electron'
 import initSqlJs from 'sql.js'
 import { logger } from '../logger'
-import type { CredentialRow, DeviceRow, SessionRow, Store } from './types'
+import { normalizeSessionRow, type CredentialRow, type DeviceRow, type SessionRow, type Store } from './types'
 
 /** 只声明本模块用到的 sql.js 能力，避免类型版本差异带来的编译噪音 */
 interface SqlExecResult {
@@ -54,7 +54,11 @@ const SCHEMA: string[] = [
     status TEXT NOT NULL,
     startedAt TEXT NOT NULL,
     endedAt TEXT NOT NULL DEFAULT '',
-    errorMessage TEXT NOT NULL DEFAULT ''
+    errorMessage TEXT NOT NULL DEFAULT '',
+    externalPid INTEGER NOT NULL DEFAULT 0,
+    durationSec INTEGER NOT NULL DEFAULT 0,
+    durationUnavailable INTEGER NOT NULL DEFAULT 0,
+    ip TEXT NOT NULL DEFAULT ''
   )`,
   `CREATE TABLE IF NOT EXISTS settings (
     setting_key TEXT PRIMARY KEY,
@@ -86,7 +90,12 @@ export class SqlStore implements Store {
       `ALTER TABLE devices ADD COLUMN detectedPorts TEXT NOT NULL DEFAULT '[]'`,
       `ALTER TABLE devices ADD COLUMN osConfidence TEXT NOT NULL DEFAULT 'none'`,
       `ALTER TABLE devices ADD COLUMN osEvidence TEXT NOT NULL DEFAULT '[]'`,
-      `ALTER TABLE devices ADD COLUMN osManual INTEGER NOT NULL DEFAULT 0`
+      `ALTER TABLE devices ADD COLUMN osManual INTEGER NOT NULL DEFAULT 0`,
+      // v1.5-P0-2: 会话运行期字段（老库缺列时补齐，duplicate column 按预期忽略）
+      `ALTER TABLE sessions ADD COLUMN externalPid INTEGER NOT NULL DEFAULT 0`,
+      `ALTER TABLE sessions ADD COLUMN durationSec INTEGER NOT NULL DEFAULT 0`,
+      `ALTER TABLE sessions ADD COLUMN durationUnavailable INTEGER NOT NULL DEFAULT 0`,
+      `ALTER TABLE sessions ADD COLUMN ip TEXT NOT NULL DEFAULT ''`
     ]
     for (const sql of migrations) {
       try {
@@ -167,24 +176,42 @@ export class SqlStore implements Store {
   }
 
   listSessions(): SessionRow[] {
-    return this.all<SessionRow>('SELECT * FROM sessions ORDER BY startedAt DESC LIMIT 200')
+    return this.all<SessionRow>('SELECT * FROM sessions ORDER BY startedAt DESC LIMIT 200').map(
+      normalizeSessionRow
+    )
   }
 
   addSession(row: SessionRow): void {
     this.db.run(
       `INSERT INTO sessions
-       (id, deviceId, deviceName, protocol, status, startedAt, endedAt, errorMessage)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-      [row.id, row.deviceId, row.deviceName, row.protocol, row.status, row.startedAt, row.endedAt, row.errorMessage]
+       (id, deviceId, deviceName, protocol, status, startedAt, endedAt, errorMessage,
+        externalPid, durationSec, durationUnavailable, ip)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        row.id, row.deviceId, row.deviceName, row.protocol, row.status, row.startedAt, row.endedAt,
+        row.errorMessage,
+        row.externalPid ?? 0, row.durationSec ?? 0, row.durationUnavailable ? 1 : 0,
+        row.ip ?? ''
+      ]
     )
     this.persist()
   }
 
   updateSession(row: SessionRow): void {
     this.db.run(
-      'UPDATE sessions SET status = ?, endedAt = ?, errorMessage = ? WHERE id = ?',
-      [row.status, row.endedAt, row.errorMessage, row.id]
+      `UPDATE sessions SET status = ?, endedAt = ?, errorMessage = ?,
+        externalPid = ?, durationSec = ?, durationUnavailable = ?, ip = ? WHERE id = ?`,
+      [
+        row.status, row.endedAt, row.errorMessage,
+        row.externalPid ?? 0, row.durationSec ?? 0, row.durationUnavailable ? 1 : 0,
+        row.ip ?? '', row.id
+      ]
     )
+    this.persist()
+  }
+
+  clearSessions(): void {
+    this.db.run('DELETE FROM sessions')
     this.persist()
   }
 
