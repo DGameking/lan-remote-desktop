@@ -27,14 +27,50 @@ export function getStore(): Store {
   return instance
 }
 
-const BOOLEAN_KEYS = new Set<keyof AppSettings>([
+/**
+ * 所有以布尔值存储、但底层 KV 只能存字符串的设置键。
+ * 新增布尔设置项时必须同步加入，否则 getSettings() 会把 'false' 原样读回，
+ * UI 受控组件（el-switch）把非空字符串判为真，显示与真实状态相反。
+ * tests/settings.test.ts 有元测试按 DEFAULT_SETTINGS 的类型自动拦截遗漏。
+ */
+export const BOOLEAN_SETTING_KEYS = new Set<keyof AppSettings>([
   'useCmdkey',
   'complianceAccepted',
   'telemetryConsent',
   'clipboardSharing',
   'driveRedirection',
-  'rdpPrinterRedirection'
+  'rdpPrinterRedirection',
+  'onlineRefreshEnabled'
 ])
+
+/**
+ * 数值型设置键。KV 底层只能存字符串，读回时必须转回 number，
+ * 否则 el-input-number 收到 '60' 这类字符串、调度器的 Number() 兜底掩盖真实脏数据。
+ * v1.6 的 rdpWidth/rdpHeight 与 v1.7 的三个新字段都在此列。
+ */
+export const NUMERIC_SETTING_KEYS = new Set<keyof AppSettings>([
+  'rdpWidth',
+  'rdpHeight',
+  'onlineRefreshIntervalSec',
+  'autoScanIntervalMin'
+])
+
+/**
+ * 设置从 KV 存储读回时的类型还原。
+ * 布尔键按 'true' 字符串还原；数值键转回有限数字，脏数据回落到默认值；其余原样返回。
+ */
+export function coerceSettingValue(
+  key: keyof AppSettings,
+  raw: string,
+  fallback: unknown
+): unknown {
+  if (BOOLEAN_SETTING_KEYS.has(key)) return raw === 'true'
+  if (NUMERIC_SETTING_KEYS.has(key)) {
+    const value = Number(raw)
+    return Number.isFinite(value) ? value : fallback
+  }
+  return raw
+}
 
 /**
  * 零遥测归一化（纯函数，便于回归测试）：当前版本 telemetryConsent 恒为 false。
@@ -52,11 +88,11 @@ export function getSettings(): AppSettings {
   for (const key of Object.keys(DEFAULT_SETTINGS) as (keyof AppSettings)[]) {
     const raw = store.getSetting(key)
     if (raw === undefined) continue
-    if (BOOLEAN_KEYS.has(key)) {
-      ;(result as unknown as Record<string, unknown>)[key] = raw === 'true'
-    } else {
-      ;(result as unknown as Record<string, unknown>)[key] = raw
-    }
+    ;(result as unknown as Record<string, unknown>)[key] = coerceSettingValue(
+      key,
+      raw,
+      (result as unknown as Record<string, unknown>)[key]
+    )
   }
   return normalizeTelemetryConsent(result)
 }

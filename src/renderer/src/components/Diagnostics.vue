@@ -4,6 +4,7 @@ import { ElMessage } from 'element-plus'
 import { api, unwrap } from '../api'
 import type {
   DiagnosticsSnapshot,
+  LatencyRecord,
   LogEntry,
   LogQuery,
   ProtocolId,
@@ -24,6 +25,11 @@ const exportedText = ref('')
 
 const logs = ref<LogEntry[]>([])
 const logQueried = ref(false)
+
+// v1.7: 延迟测速历史（最近 100 条，本地留存）
+const latencyRecords = ref<LatencyRecord[]>([])
+const latencyLoading = ref(false)
+const latencyLoaded = ref(false)
 
 const levelOptions: LogLevel[] = ['INFO', 'WARN', 'ERROR']
 const queryLevels = ref<LogLevel[]>([])
@@ -102,7 +108,21 @@ async function load(): Promise<void> {
 
 onMounted(() => {
   void load()
+  void loadLatency()
 })
+
+/** v1.7: 拉取最近 100 条延迟测速记录（不传 IP 即全部）。 */
+async function loadLatency(): Promise<void> {
+  latencyLoading.value = true
+  try {
+    latencyRecords.value = await unwrap(api.latencyList())
+    latencyLoaded.value = true
+  } catch (error) {
+    ElMessage.error(errorText(error))
+  } finally {
+    latencyLoading.value = false
+  }
+}
 
 async function handleExport(): Promise<void> {
   exporting.value = true
@@ -349,6 +369,42 @@ async function queryLogs(): Promise<void> {
       </el-table-column>
     </el-table>
     <el-empty v-if="logQueried && logs.length === 0" description="无匹配日志" :image-size="50" />
+
+    <h3 class="block-title">延迟测速历史（最近 100 条）</h3>
+    <div class="latency-toolbar">
+      <el-button size="small" :loading="latencyLoading" @click="loadLatency">刷新</el-button>
+      <span class="ld-muted action-hint">测速结果仅保存在本机，零遥测。</span>
+    </div>
+    <el-table :data="latencyRecords" size="small" stripe style="width: 100%" max-height="320">
+      <el-table-column label="目标 IP" min-width="150">
+        <template #default="scope">{{ (scope.row as LatencyRecord).ip }}</template>
+      </el-table-column>
+      <el-table-column label="端口" width="90">
+        <template #default="scope">{{ (scope.row as LatencyRecord).port }}</template>
+      </el-table-column>
+      <el-table-column label="延迟 ms" width="110">
+        <template #default="scope">
+          <span :class="(scope.row as LatencyRecord).reachable ? 'text-online' : 'ld-muted'">
+            {{ (scope.row as LatencyRecord).latencyMs }}
+          </span>
+        </template>
+      </el-table-column>
+      <el-table-column label="结果" width="100">
+        <template #default="scope">
+          <el-tag :type="(scope.row as LatencyRecord).reachable ? 'success' : 'danger'" size="small">
+            {{ (scope.row as LatencyRecord).reachable ? '可达' : '不可达' }}
+          </el-tag>
+        </template>
+      </el-table-column>
+      <el-table-column label="时间" min-width="170">
+        <template #default="scope">{{ formatTime((scope.row as LatencyRecord).measuredAt) }}</template>
+      </el-table-column>
+    </el-table>
+    <el-empty
+      v-if="latencyLoaded && latencyRecords.length === 0"
+      description="暂无测速记录"
+      :image-size="50"
+    />
   </div>
 </template>
 
@@ -366,6 +422,15 @@ async function queryLogs(): Promise<void> {
 }
 .action-hint {
   font-size: 12px;
+}
+.latency-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.text-online {
+  color: var(--ld-success);
 }
 .empty-hint {
   font-size: 12px;

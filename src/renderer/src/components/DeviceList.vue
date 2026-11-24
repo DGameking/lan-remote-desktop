@@ -1,8 +1,16 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import { api, unwrap } from '../api'
-import type { Device, OsConfidence, OsHint, ProtocolId } from '../../../shared/types'
+import {
+  PROTOCOL_PRECHECK_PORT,
+  type Device,
+  type LatencyRecord,
+  type OnlineStatusEvent,
+  type OsConfidence,
+  type OsHint,
+  type ProtocolId
+} from '../../../shared/types'
 
 const props = defineProps<{ devices: Device[]; loading?: boolean }>()
 const emit = defineEmits<{
@@ -16,6 +24,17 @@ const emit = defineEmits<{
 }>()
 
 const viewMode = ref<'card' | 'table'>('card')
+
+// v1.7: 多选批量唤醒
+const selectedIps = ref<string[]>([])
+const batchWaking = ref(false)
+
+// v1.7: 在线状态变化推送订阅（收到事件只改本地对应设备的 online 字段，不重拉全量）
+let unsubscribeOnline: (() => void) | null = null
+
+// v1.7: 延迟测速结果（按 IP 保存最近一次），用于卡片/表格就地显示
+const latencyMap = ref<Record<string, LatencyRecord>>({})
+const measuring = ref<Record<string, boolean>>({})
 
 // v1.6: 本地搜索 / 排序 / 分组筛选（纯前端，不触发扫描或 IPC）
 const searchQuery = ref('')
@@ -222,6 +241,107 @@ async function wakeDevice(device: Device): Promise<void> {
     ElMessage.error(error instanceof Error ? error.message : String(error))
   }
 }
+
+/* ============================ v1.7 新增 ============================ */
+
+/** 卡片模式复选框：判断某 IP 是否已选中。 */
+function isSelected(ip: string): boolean {
+  return selectedIps.value.includes(ip)
+}
+
+/** 卡片模式复选框切换；表格模式由 el-table 的 selection-change 同步。 */
+function setSelected(ip: string, checked: unknown): void {
+  const next = new Set(selectedIps.value)
+  if (checked) next.add(ip)
+  else next.delete(ip)
+  selectedIps.value = Array.from(next)
+}
+
+/** 表格模式 selection 列变化时把选中行 IP 同步到 shared 状态。 */
+function onTableSelectionChange(rows: Device[]): void {
+  selectedIps.value = rows.map((row) => row.ip)
+}
+
+/** 切换视图时清空选择，避免两种视图各自的选择状态不一致。 */
+watch(viewMode, () => {
+  selectedIps.value = []
+})
+
+/**
+ * 批量唤醒：UI 循环调用现有 device:wake（不新增 IPC 通道）。
+ * 单个失败不影响其它设备，最后汇总成功/失败/无 MAC 跳过数。
+ */
+async function batchWake(): Promise<void> {
+  const targets = props.devices.filter((device) => selectedIps.value.includes(device.ip))
+  if (targets.length === 0) return
+  let ok = 0
+  let failed = 0
+  let noMac = 0
+  batchWaking.value = true
+  try {
+    for (const device of targets) {
+      if (!device.mac) {
+        noMac++
+        continue
+      }
+      try {
+        const result = await unwrap(api.deviceWake({ mac: device.mac, ip: device.ip }))
+        if (result.ok) ok++
+        else failed++
+      } catch {
+        failed++
+      }
+    }
+    const parts = [`唤醒 ${ok} 台`]
+    if (failed > 0) parts.push(`失败 ${failed} 台`)
+    if (noMac > 0) parts.push(`${noMac} 台无 MAC 跳过`)
+    const message = parts.join('，')
+    if (failed > 0) ElMessage.warning(message)
+    else ElMessage.success(message)
+  } finally {
+    batchWaking.value = false
+  }
+}
+
+/** 测速端口：优先用扫描发现的端口，否则用协议默认端口。 */
+function latencyPort(device: Device): number {
+  const detected = device.detectedPorts ?? []
+  if (detected.length > 0) return detected[0]
+  const defaultPort = PROTOCOL_PRECHECK_PORT[recommend(device)]
+  return defaultPort > 0 ? defaultPort : 3389
+}
+
+/** 单台设备测速：成功后就地显示最近延迟，并提示 ms。 */
+async function measureLatency(device: Device): Promise<void> {
+  const port = latencyPort(device)
+  measuring.value = { ...measuring.value, [device.ip]: true }
+  try {
+    const record = await unwrap(api.latencyMeasure(device.ip, port))
+    latencyMap.value = { ...latencyMap.value, [device.ip]: record }
+    if (record.reachable) ElMessage.success(`${device.ip}:${port} 延迟 ${record.latencyMs} ms`)
+    else ElMessage.warning(`${device.ip}:${port} 不可达`)
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : String(error))
+  } finally {
+    const next = { ...measuring.value }
+    delete next[device.ip]
+    measuring.value = next
+  }
+}
+
+/** 在线状态推送：只改 props 里对应设备的 online 字段（与父组件是同一响应式对象）。 */
+onMounted(() => {
+  unsubscribeOnline = api.onOnlineStatusChanged((event: OnlineStatusEvent) => {
+    props.devices.forEach((device) => {
+      if (device.ip === event.ip) device.online = event.online
+    })
+  })
+})
+
+onUnmounted(() => {
+  unsubscribeOnline?.()
+  unsubscribeOnline = null
+})
 </script>
 
 <template>
@@ -236,6 +356,14 @@ async function wakeDevice(device: Device): Promise<void> {
           <el-radio-button value="card">卡片</el-radio-button>
           <el-radio-button value="table">表格</el-radio-button>
         </el-radio-group>
+        <el-button
+          size="small"
+          type="warning"
+          plain
+          :disabled="selectedIps.length === 0"
+          :loading="batchWaking"
+          @click="batchWake"
+        >批量唤醒{{ selectedIps.length ? `（${selectedIps.length}）` : '' }}</el-button>
         <el-button size="small" @click="emit('refresh')">刷新</el-button>
       </div>
     </div>
@@ -288,6 +416,11 @@ async function wakeDevice(device: Device): Promise<void> {
     <div v-else-if="viewMode === 'card'" class="card-grid">
       <article v-for="device in visibleDevices" :key="device.id" class="device-card">
         <div class="card-top">
+          <el-checkbox
+            class="card-select"
+            :model-value="isSelected(device.ip)"
+            @change="(checked: unknown) => setSelected(device.ip, checked)"
+          />
           <div class="device-title">
             <span class="status-dot" :class="{ online: device.online }" />
             <strong :title="displayName(device)">{{ displayName(device) }}</strong>
@@ -330,6 +463,7 @@ async function wakeDevice(device: Device): Promise<void> {
           <span>{{ device.online ? '在线' : '离线/未扫描到' }}</span>
           <span>·</span>
           <span>来源 {{ device.source }}</span>
+          <span v-if="latencyMap[device.ip]">· 最近延迟 {{ latencyMap[device.ip].latencyMs }} ms</span>
           <span v-if="device.mac">· {{ device.mac }}</span>
           <el-tag v-if="device.group" size="small" type="info" effect="plain" class="group-tag">{{ device.group }}</el-tag>
         </div>
@@ -341,7 +475,13 @@ async function wakeDevice(device: Device): Promise<void> {
           >{{ protocolLabels[protocol] }}</span>
           <span v-if="device.availableProtocols.length === 0" class="ld-tag muted">未探测到开放端口</span>
         </div>
-        <div v-if="serverPorts(device).length > 0 || device.mac" class="card-extra">
+        <div class="card-extra">
+          <el-button
+            size="small"
+            plain
+            :loading="!!measuring[device.ip]"
+            @click="measureLatency(device)"
+          >测速</el-button>
           <el-tooltip v-if="serverPorts(device).length === 1" :content="SERVER_LINK_TIP" placement="top">
             <el-button size="small" plain @click="openServer(device, serverPorts(device)[0])">管理页</el-button>
           </el-tooltip>
@@ -376,7 +516,15 @@ async function wakeDevice(device: Device): Promise<void> {
       </article>
     </div>
 
-    <el-table v-else :data="visibleDevices" stripe style="width: 100%" max-height="460">
+    <el-table
+      v-else
+      :data="visibleDevices"
+      stripe
+      style="width: 100%"
+      max-height="460"
+      @selection-change="onTableSelectionChange"
+    >
+      <el-table-column type="selection" width="42" />
       <el-table-column label="设备名" min-width="140">
         <template #default="scope">{{ displayName(scope.row as Device) }}</template>
       </el-table-column>
@@ -417,11 +565,14 @@ async function wakeDevice(device: Device): Promise<void> {
           </el-dropdown>
         </template>
       </el-table-column>
-      <el-table-column label="状态" width="100">
+      <el-table-column label="状态 / 最近延迟" width="130">
         <template #default="scope">
           <span :class="(scope.row as Device).online ? 'text-online' : 'ld-muted'">
             {{ (scope.row as Device).online ? '在线' : '离线' }}
           </span>
+          <div v-if="latencyMap[(scope.row as Device).ip]" class="latency-text">
+            延迟 {{ latencyMap[(scope.row as Device).ip].latencyMs }} ms
+          </div>
         </template>
       </el-table-column>
       <el-table-column label="可用协议" min-width="150">
@@ -434,10 +585,16 @@ async function wakeDevice(device: Device): Promise<void> {
           <span v-if="(scope.row as Device).availableProtocols.length === 0" class="ld-muted">-</span>
         </template>
       </el-table-column>
-      <el-table-column label="操作" width="440" fixed="right">
+      <el-table-column label="操作" width="510" fixed="right">
         <template #default="scope">
           <el-button link type="primary" size="small" @click="emit('connect', scope.row as Device)">连接</el-button>
           <el-button link size="small" @click="emit('file-transfer', scope.row as Device)">传文件</el-button>
+          <el-button
+            link
+            size="small"
+            :loading="!!measuring[(scope.row as Device).ip]"
+            @click="measureLatency(scope.row as Device)"
+          >测速</el-button>
           <el-button link size="small" :type="(scope.row as Device).favorite ? 'warning' : 'info'" @click="toggleFavorite(scope.row as Device)">
             {{ (scope.row as Device).favorite ? '★' : '☆' }}
           </el-button>
@@ -672,6 +829,15 @@ async function wakeDevice(device: Device): Promise<void> {
 }
 .text-online {
   color: var(--ld-success);
+}
+.card-select {
+  flex-shrink: 0;
+  margin-right: 2px;
+}
+.latency-text {
+  font-size: 11px;
+  color: var(--ld-primary);
+  margin-top: 2px;
 }
 .os-tag {
   cursor: pointer;

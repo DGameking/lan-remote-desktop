@@ -3,7 +3,7 @@ import path from 'node:path'
 import { app } from 'electron'
 import initSqlJs from 'sql.js'
 import { logger } from '../logger'
-import { normalizeSessionRow, type CredentialRow, type DeviceRow, type SessionRow, type Store } from './types'
+import { normalizeSessionRow, type CredentialRow, type DeviceRow, type LatencyRow, type SessionRow, type Store } from './types'
 
 /** 只声明本模块用到的 sql.js 能力，避免类型版本差异带来的编译噪音 */
 interface SqlExecResult {
@@ -68,6 +68,14 @@ const SCHEMA: string[] = [
   `CREATE TABLE IF NOT EXISTS settings (
     setting_key TEXT PRIMARY KEY,
     setting_value TEXT NOT NULL
+  )`,
+  `CREATE TABLE IF NOT EXISTS latency (
+    id TEXT PRIMARY KEY,
+    ip TEXT NOT NULL,
+    port INTEGER NOT NULL,
+    latencyMs INTEGER NOT NULL,
+    reachable INTEGER NOT NULL DEFAULT 0,
+    measuredAt TEXT NOT NULL
   )`
 ]
 
@@ -108,7 +116,9 @@ export class SqlStore implements Store {
       `ALTER TABLE sessions ADD COLUMN durationUnavailable INTEGER NOT NULL DEFAULT 0`,
       `ALTER TABLE sessions ADD COLUMN ip TEXT NOT NULL DEFAULT ''`,
       // v1.6: 会话备注
-      `ALTER TABLE sessions ADD COLUMN note TEXT NOT NULL DEFAULT ''`
+      `ALTER TABLE sessions ADD COLUMN note TEXT NOT NULL DEFAULT ''`,
+      // v1.7: 延迟历史按 ip + 时间倒序查询的索引（IF NOT EXISTS 幂等，老库无 latency 表时已由上方 SCHEMA 建好）
+      `CREATE INDEX IF NOT EXISTS idx_latency_ip_time ON latency(ip, measuredAt DESC)`
     ]
     for (const sql of migrations) {
       try {
@@ -283,5 +293,59 @@ export class SqlStore implements Store {
     const result: Record<string, string> = {}
     for (const row of rows) result[row.setting_key] = row.setting_value
     return result
+  }
+
+  setDeviceOnlineBatch(updates: Array<{ ip: string; online: boolean }>): number {
+    // 一次查出当前所有设备的 ip→online，避免逐条 SELECT。
+    const rows = this.all<{ ip: string; online: number }>('SELECT ip, online FROM devices')
+    const current = new Map<string, number>()
+    for (const row of rows) current.set(row.ip, row.online === 1 ? 1 : 0)
+
+    // updates 里可能有重复 ip，用 Map 去重（后者覆盖前者）。
+    const desired = new Map<string, number>()
+    for (const update of updates) desired.set(update.ip, update.online ? 1 : 0)
+
+    const flips: Array<{ ip: string; online: number }> = []
+    for (const [ip, online] of desired) {
+      const old = current.get(ip)
+      // 只更新已存在的设备、且状态真正翻转的行。
+      if (old !== undefined && old !== online) flips.push({ ip, online })
+    }
+    if (flips.length === 0) return 0
+
+    const updatedAt = new Date().toISOString()
+    for (const flip of flips) {
+      this.db.run('UPDATE devices SET online = ?, updatedAt = ? WHERE ip = ?', [
+        flip.online,
+        updatedAt,
+        flip.ip
+      ])
+    }
+    // 所有翻转共用一次落盘，解决 sql.js 的写放大问题。
+    this.persist()
+    return flips.length
+  }
+
+  addLatency(row: LatencyRow): void {
+    this.db.run(
+      `INSERT INTO latency (id, ip, port, latencyMs, reachable, measuredAt)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+      [row.id, row.ip, row.port, row.latencyMs, row.reachable, row.measuredAt]
+    )
+    // 本地日志性质，只保留最近 1000 条，避免无限增长。
+    this.db.run(
+      'DELETE FROM latency WHERE id NOT IN (SELECT id FROM latency ORDER BY measuredAt DESC LIMIT 1000)'
+    )
+    this.persist()
+  }
+
+  listLatency(ip?: string, limit = 100): LatencyRow[] {
+    // 按约定拼接已校验的字符串：ip 仅允许数字点分，limit 收敛到 1..1000
+    let sql = 'SELECT * FROM latency'
+    if (ip && /^[0-9.]+$/.test(ip)) sql += ` WHERE ip = '${ip}'`
+    const n = Number.isFinite(limit) ? Math.floor(limit) : 100
+    const safeLimit = Math.min(1000, Math.max(1, n))
+    sql += ` ORDER BY measuredAt DESC LIMIT ${safeLimit}`
+    return this.all<LatencyRow>(sql)
   }
 }

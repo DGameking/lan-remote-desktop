@@ -1,17 +1,18 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { logger } from '../logger'
-import { normalizeSessionRow, type CredentialRow, type DeviceRow, type SessionRow, type Store } from './types'
+import { normalizeSessionRow, type CredentialRow, type DeviceRow, type LatencyRow, type SessionRow, type Store } from './types'
 
 interface JsonData {
   devices: DeviceRow[]
   credentials: CredentialRow[]
   sessions: SessionRow[]
+  latency: LatencyRow[]
   settings: Record<string, string>
 }
 
 function emptyData(): JsonData {
-  return { devices: [], credentials: [], sessions: [], settings: {} }
+  return { devices: [], credentials: [], sessions: [], latency: [], settings: {} }
 }
 
 /**
@@ -56,6 +57,8 @@ export class JsonStore implements Store {
             credentials: Array.isArray(raw.credentials) ? raw.credentials : [],
             // 老数据缺 v1.5 会话运行期字段时补默认值，避免 undefined 落库
             sessions: Array.isArray(raw.sessions) ? raw.sessions.map(normalizeSessionRow) : [],
+            // v1.7: 延迟历史（老文件无此字段时补空数组）
+            latency: Array.isArray(raw.latency) ? raw.latency : [],
             settings: raw.settings && typeof raw.settings === 'object' ? raw.settings : {}
           }
         }
@@ -177,5 +180,43 @@ export class JsonStore implements Store {
 
   listSettings(): Record<string, string> {
     return { ...this.data.settings }
+  }
+
+  setDeviceOnlineBatch(updates: Array<{ ip: string; online: boolean }>): number {
+    // updates 里可能有重复 ip，用 Map 去重（后者覆盖前者）。
+    const desired = new Map<string, number>()
+    for (const update of updates) desired.set(update.ip, update.online ? 1 : 0)
+
+    const updatedAt = new Date().toISOString()
+    let changed = 0
+    for (const device of this.data.devices) {
+      const target = desired.get(device.ip)
+      // 只改状态真正翻转的行。
+      if (target !== undefined && device.online !== target) {
+        device.online = target
+        device.updatedAt = updatedAt
+        changed++
+      }
+    }
+    // 无变化不落盘；有变化整批只 persist 一次。
+    if (changed > 0) this.persist()
+    return changed
+  }
+
+  addLatency(row: LatencyRow): void {
+    this.data.latency.push(row)
+    if (this.data.latency.length > 1000) {
+      this.data.latency = this.data.latency.slice(-1000)
+    }
+    this.persist()
+  }
+
+  listLatency(ip?: string, limit = 100): LatencyRow[] {
+    const n = Number.isFinite(limit) ? Math.floor(limit) : 100
+    const safeLimit = Math.min(1000, Math.max(1, n))
+    return this.data.latency
+      .filter((row) => (ip ? row.ip === ip : true))
+      .sort((a, b) => b.measuredAt.localeCompare(a.measuredAt))
+      .slice(0, safeLimit)
   }
 }

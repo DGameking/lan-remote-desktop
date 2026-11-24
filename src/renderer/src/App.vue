@@ -2,7 +2,7 @@
 import { onMounted, onUnmounted, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { api, unwrap } from './api'
-import type { AppSettings, AppStatus, Device, OsHint, ScanProgress, SubnetView } from '../../shared/types'
+import type { AppSettings, AppStatus, DeepLinkRequest, Device, OsHint, ScanProgress, SubnetView } from '../../shared/types'
 import ScanPanel from './components/ScanPanel.vue'
 import DeviceList from './components/DeviceList.vue'
 import ConnectDialog from './components/ConnectDialog.vue'
@@ -24,6 +24,8 @@ const progress = ref<ScanProgress>({
 })
 const selectedDevice = ref<Device | null>(null)
 const quickConnectVisible = ref(false)
+/** v1.7-D: 命令行 / 协议链接预填参数，仅用于填充快速连接表单 */
+const deepLinkRequest = ref<DeepLinkRequest | null>(null)
 const transferDevice = ref<Device | null>(null)
 const settings = ref<AppSettings | null>(null)
 const complianceVisible = ref(false)
@@ -33,6 +35,7 @@ const subnets = ref<SubnetView[]>([])
 const targetCidr = ref<string>('')
 
 let unsubscribeProgress: (() => void) | null = null
+let unsubscribeDeepLink: (() => void) | null = null
 
 async function refreshDevices(): Promise<void> {
   try {
@@ -128,6 +131,13 @@ onMounted(async () => {
     progress.value = next
     if (next.phase === 'done' || next.phase === 'stopped') scanning.value = false
   })
+  // v1.7-D: 收到直连参数只打开表单并预填，不调用任何连接 API。
+  unsubscribeDeepLink = api.onDeepLinkRequest((req) => {
+    deepLinkRequest.value = req
+    activeTab.value = 'devices'
+    quickConnectVisible.value = true
+    ElMessage.info('已根据链接预填连接参数，请确认后手动发起连接')
+  })
   await refreshAll()
   await refreshSubnets()
   try {
@@ -140,6 +150,7 @@ onMounted(async () => {
 
 onUnmounted(() => {
   unsubscribeProgress?.()
+  unsubscribeDeepLink?.()
 })
 </script>
 
@@ -221,6 +232,8 @@ onUnmounted(() => {
     <QuickConnect
       v-model:visible="quickConnectVisible"
       :protocols="appStatus?.protocols || []"
+      :prefill="deepLinkRequest"
+      @close="deepLinkRequest = null"
       @connected="refreshAll"
     />
 

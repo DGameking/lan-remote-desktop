@@ -1,6 +1,7 @@
 import type {
   Device,
   DiscoverySource,
+  LatencyRecord,
   OsConfidence,
   OsEvidence,
   OsHint,
@@ -44,6 +45,16 @@ export interface CredentialRow {
   encryptedPassword: string
   createdAt: string
   updatedAt: string
+}
+
+/** v1.7: 延迟测速记录行（本地日志性质，零遥测） */
+export interface LatencyRow {
+  id: string
+  ip: string
+  port: number
+  latencyMs: number
+  reachable: number
+  measuredAt: string
 }
 
 export interface SessionRow {
@@ -104,6 +115,18 @@ export function normalizeSessionRow(row: SessionRow): SessionRow {
   }
 }
 
+/** v1.7: 延迟行 → 契约记录（DB 的 0/1 归一为 boolean） */
+export function latencyRowToRecord(row: LatencyRow): LatencyRecord {
+  return {
+    id: row.id,
+    ip: row.ip,
+    port: row.port,
+    latencyMs: row.latencyMs,
+    reachable: row.reachable === 1,
+    measuredAt: row.measuredAt
+  }
+}
+
 /** 存储驱动契约：SQLite 与 JSON 降级实现同一套接口 */
 export interface Store {
   mode(): 'sqlite' | 'json'
@@ -125,6 +148,16 @@ export interface Store {
   getSetting(key: string): string | undefined
   /** v1.6: 导出用——列出全部设置键值对 */
   listSettings(): Record<string, string>
+  /**
+   * v1.7: 批量更新设备在线状态，只 persist 一次（解决 sql.js 写放大）。
+   * 传入 ip→online 映射；实现内部应只更新状态真正翻转的行，无变化时返回 0 且不落盘。
+   * 返回实际翻转的行数。
+   */
+  setDeviceOnlineBatch(updates: Array<{ ip: string; online: boolean }>): number
+  /** v1.7: 追加一条延迟测速记录 */
+  addLatency(row: LatencyRow): void
+  /** v1.7: 查询延迟历史；传 ip 时只查该目标；最多 limit 条，按 measuredAt DESC */
+  listLatency(ip?: string, limit?: number): LatencyRow[]
   setSetting(key: string, value: string): void
 }
 

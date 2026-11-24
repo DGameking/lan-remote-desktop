@@ -7,6 +7,7 @@ import {
   PROTOCOL_PRECHECK_PORT,
   type AppStatus,
   type CredentialView,
+  type Device,
   type ExportData,
   type IpcResponse,
   type ImportResult,
@@ -15,10 +16,11 @@ import {
   type WakeResult
 } from '../../shared/types'
 import type { ScanManager } from '../discovery/manager'
-import { probePortWithRetry, runFullPrecheck } from '../discovery/precheck'
+import { probePort, probePortWithRetry, runFullPrecheck } from '../discovery/precheck'
 import { detectSubnets } from '../discovery/subnet'
 import { broadcastForCidr, sendWakeOnLan } from '../discovery/wol'
 import { logger, scopedLogger } from '../logger'
+import { OnlineMonitor } from '../scheduler/online-monitor'
 import {
   collectDiagnosticsInput,
   exportDiagnosticsBundle,
@@ -36,10 +38,12 @@ import {
   deviceToRow,
   getSettings,
   getStore,
+  latencyRowToRecord,
   now,
   rowToDevice,
   saveSettings,
-  type DeviceRow
+  type DeviceRow,
+  type LatencyRow
 } from '../store'
 import {
   fail,
@@ -52,6 +56,8 @@ import {
   validateExportData,
   validateFileTransferTarget,
   validateId,
+  validateLatencyListIp,
+  validateLatencyMeasure,
   validateLogQuery,
   validateServerLinkTarget,
   validateSessionNote,
@@ -75,12 +81,86 @@ function precheckFailureHint(port: number): string {
   return '端口未响应，请确认被控端已开启对应服务或检查防火墙。'
 }
 
+/** registerIpc 返回的调度器句柄；main/index.ts 在 before-quit 中调用 disposeSchedulers 清理定时器。 */
+export interface IpcSchedulerHandle {
+  disposeSchedulers(): void
+}
+
+/**
+ * v1.7: 每台设备选一个用于在线探测的端口：
+ * 优先 detectedPorts 中的 3389 或 5900-5910，否则按协议回退（vnc→5900，其余→3389）。
+ */
+function pickOnlineProbePort(device: Device): number {
+  const preferred = (device.detectedPorts ?? []).find(
+    (port) => port === 3389 || (port >= 5900 && port <= 5910)
+  )
+  if (preferred !== undefined) return preferred
+  return device.availableProtocols.includes('vnc') ? 5900 : 3389
+}
+
+/** 读取自动扫描分钟数：容忍字符串并收敛到 0（关闭）或 >=1 分钟。 */
+function resolveAutoScanMinutes(raw: unknown): number {
+  const value = typeof raw === 'number' ? raw : Number(raw)
+  if (!Number.isFinite(value) || value <= 0) return 0
+  return Math.max(1, Math.trunc(value))
+}
+
 /** 注册全部 IPC handler。所有 renderer 入参都经过 validators 校验。 */
 export function registerIpc(
   getWindow: () => BrowserWindow | null,
   scanManager: ScanManager,
   sessionManager: SessionManager
-): void {
+): IpcSchedulerHandle {
+  // v1.7: 在线状态巡检器。目标端口在每轮动态读取设备列表，避免缓存导致的陈旧探测。
+  const onlineMonitor = new OnlineMonitor({
+    getTargets: () =>
+      getStore()
+        .listDevices()
+        .map(rowToDevice)
+        .map((device) => ({ ip: device.ip, port: pickOnlineProbePort(device) })),
+    onStatusChange: (event) => {
+      getWindow()?.webContents.send(IPC_CHANNELS.ONLINE_STATUS_CHANGED, event)
+    },
+    getSettings,
+    getStore
+  })
+
+  // 窗口焦点联动：失焦降频、回焦恢复全频。app 级事件无需等待 BrowserWindow 创建。
+  const onWindowFocus = (): void => onlineMonitor.setWindowFocused(true)
+  const onWindowBlur = (): void => onlineMonitor.setWindowFocused(false)
+  app.on('browser-window-focus', onWindowFocus)
+  app.on('browser-window-blur', onWindowBlur)
+
+  // v1.7: 定时自动扫描。扫描进行中（含手动扫描）跳过，避免并发扫描互相踩踏。
+  let autoScanTimer: ReturnType<typeof setInterval> | null = null
+  let autoScanMinutes = 0
+  const applyAutoScan = (): void => {
+    const minutes = resolveAutoScanMinutes(getSettings().autoScanIntervalMin)
+    if (minutes <= 0) {
+      if (autoScanTimer !== null) clearInterval(autoScanTimer)
+      autoScanTimer = null
+      autoScanMinutes = 0
+      return
+    }
+    if (autoScanTimer !== null && minutes === autoScanMinutes) return
+    if (autoScanTimer !== null) clearInterval(autoScanTimer)
+    autoScanMinutes = minutes
+    autoScanTimer = setInterval(() => {
+      if (scanManager.isScanning) return
+      void scanManager.start().catch((error: unknown) => {
+        logger.warn('定时自动扫描失败', error)
+      })
+    }, minutes * 60 * 1000)
+  }
+
+  // 设置变更后统一刷新调度器（在线巡检启停/间隔 + 自动扫描重建）。
+  const applySchedulers = (): void => {
+    onlineMonitor.applySettings()
+    applyAutoScan()
+  }
+  // 启动时按已保存设置决定是否开启（默认在线刷新关闭、自动扫描关闭）。
+  applySchedulers()
+
   ipcMain.handle(IPC_CHANNELS.DISCOVERY_START, async (_event, payload: unknown): Promise<IpcResponse> => {
     try {
       if (scanManager.isScanning) return fail('扫描正在进行中')
@@ -427,7 +507,10 @@ export function registerIpc(
 
   ipcMain.handle(IPC_CHANNELS.SETTINGS_SET, async (_event, payload: unknown): Promise<IpcResponse> => {
     try {
-      return ok(saveSettings(validateSettingsPatch(payload)), '设置已保存')
+      const saved = saveSettings(validateSettingsPatch(payload))
+      // v1.7: 设置成功后立即让调度器生效（启停在线巡检 / 重建自动扫描定时器）。
+      applySchedulers()
+      return ok(saved, '设置已保存')
     } catch (error) {
       return errorResponse('settings:set', error)
     }
@@ -552,6 +635,8 @@ export function registerIpc(
           // telemetryConsent 由 saveSettings/getSettings 统一强制为 false，无需在此处理。
           saveSettings(imported.settings)
           settingsImported = true
+          // v1.7: 设置随备份导入后同样刷新调度器，避免旧的启停状态残留。
+          applySchedulers()
         }
         const result: ImportResult = { added, updated, skipped, settingsImported }
         logger.info('数据导入完成', { added, updated, skipped, settingsImported })
@@ -562,9 +647,60 @@ export function registerIpc(
     }
   )
 
+  // v1.7: 延迟测速。探测一次 TCP 端口并把结果落库，返回契约记录（0/1 归一为 boolean）。
+  ipcMain.handle(
+    IPC_CHANNELS.LATENCY_MEASURE,
+    async (_event, rawIp: unknown, rawPort: unknown): Promise<IpcResponse> => {
+      try {
+        const { ip, port } = validateLatencyMeasure(rawIp, rawPort)
+        const result = await probePort(ip, port)
+        const row: LatencyRow = {
+          id: randomUUID(),
+          ip,
+          port,
+          latencyMs: result.latencyMs,
+          reachable: result.reachable ? 1 : 0,
+          measuredAt: now()
+        }
+        getStore().addLatency(row)
+        scopedLogger('ipc').event({
+          level: 'INFO',
+          event: 'latency.measure',
+          context: { ip, port, reachable: result.reachable, latencyMs: result.latencyMs }
+        })
+        return ok(latencyRowToRecord(row))
+      } catch (error) {
+        return errorResponse('latency:measure', error)
+      }
+    }
+  )
+
+  // v1.7: 延迟历史查询（可选按 IP 过滤，最多 100 条）。
+  ipcMain.handle(IPC_CHANNELS.LATENCY_LIST, async (_event, rawIp: unknown): Promise<IpcResponse> => {
+    try {
+      const ip = validateLatencyListIp(rawIp)
+      return ok(getStore().listLatency(ip, 100).map(latencyRowToRecord))
+    } catch (error) {
+      return errorResponse('latency:list', error)
+    }
+  })
+
   // 扫描进度由主进程主动推送，使用独立事件通道；同时缓存最近一次扫描统计供诊断快照使用
   scanManager.setOnProgress((progress) => {
     recordScanFinished(progress)
     getWindow()?.webContents.send(IPC_CHANNELS.DISCOVERY_PROGRESS, progress)
   })
+
+  // 退出前由 main/index.ts 的 before-quit 调用，清理本模块创建的全部定时器与事件监听。
+  return {
+    disposeSchedulers(): void {
+      onlineMonitor.stop()
+      if (autoScanTimer !== null) {
+        clearInterval(autoScanTimer)
+        autoScanTimer = null
+      }
+      app.removeListener('browser-window-focus', onWindowFocus)
+      app.removeListener('browser-window-blur', onWindowBlur)
+    }
+  }
 }

@@ -185,6 +185,12 @@ export interface AppSettings {
   rdpHeight: number
   /** v1.6: RDP 是否默认开启打印机重定向 */
   rdpPrinterRedirection: boolean
+  /** v1.7: 是否开启设备在线状态定时刷新（默认关闭，避免无谓流量） */
+  onlineRefreshEnabled: boolean
+  /** v1.7: 在线状态刷新间隔秒数（最小 15，默认 60） */
+  onlineRefreshIntervalSec: number
+  /** v1.7: 定时扫描间隔分钟数（0=关闭，默认 0） */
+  autoScanIntervalMin: number
 }
 
 /** 统一 IPC 响应包装 */
@@ -220,6 +226,23 @@ export interface ScanProgress {
   devices: Device[]
 }
 
+/** v1.7: 一次延迟测速记录（本地留存，零遥测） */
+export interface LatencyRecord {
+  id: string
+  ip: string
+  port: number
+  latencyMs: number
+  reachable: boolean
+  measuredAt: string
+}
+
+/** v1.7: 在线状态变化推送（主进程 → 渲染层，避免渲染层轮询全量列表） */
+export interface OnlineStatusEvent {
+  ip: string
+  online: boolean
+  checkedAt: string
+}
+
 /** 连接请求 */
 export interface ConnectRequest {
   deviceId: string
@@ -243,6 +266,16 @@ export interface ConnectRequest {
   height?: number
   /** v1.6: 本次 RDP 会话是否开启打印机重定向（不传则沿用全局设置） */
   printerRedirection?: boolean
+}
+
+/**
+ * v1.7-D: 命令行 / landesk:// 协议链接解析出的直连预填参数。
+ * 注意：这仅是"预填意图"，渲染层必须让用户手动确认后才会真正发起连接。
+ */
+export interface DeepLinkRequest {
+  ip: string
+  port?: number
+  protocol?: ProtocolId
 }
 
 /** 连接结果 */
@@ -357,7 +390,15 @@ export const IPC_CHANNELS = {
   /** v1.6: 导出设备列表与设置为 JSON 文件（不含凭据） */
   DATA_EXPORT: 'data:export',
   /** v1.6: 从 JSON 文件导入设备列表与设置（不含凭据） */
-  DATA_IMPORT: 'data:import'
+  DATA_IMPORT: 'data:import',
+  /** v1.7: 延迟测速：探测并持久化一次结果 */
+  LATENCY_MEASURE: 'latency:measure',
+  /** v1.7: 查询某 IP 的延迟历史 */
+  LATENCY_LIST: 'latency:list',
+  /** v1.7: 主进程推送在线状态变化 */
+  ONLINE_STATUS_CHANGED: 'online:statusChanged',
+  /** v1.7-D: 命令行 / 协议链接解析结果推送（只用于预填连接界面） */
+  DEEPLINK_REQUEST: 'deeplink:request'
 } as const
 
 /** 默认设置（单一来源，避免两端各写一份） */
@@ -373,7 +414,10 @@ export const DEFAULT_SETTINGS: AppSettings = {
   rdpScreenMode: 'adaptive',
   rdpWidth: 0,
   rdpHeight: 0,
-  rdpPrinterRedirection: false
+  rdpPrinterRedirection: false,
+  onlineRefreshEnabled: false,
+  onlineRefreshIntervalSec: 60,
+  autoScanIntervalMin: 0
 }
 
 /**
@@ -677,4 +721,12 @@ export interface ElectronAPI {
   dataExport: () => Promise<IpcResponse<string>>
   /** v1.6: 从用户选择的 JSON 文件导入；返回导入统计 */
   dataImport: (includeSettings: boolean) => Promise<IpcResponse<ImportResult>>
+  /** v1.7: 延迟测速并返回本次结果 */
+  latencyMeasure: (ip: string, port: number) => Promise<IpcResponse<LatencyRecord>>
+  /** v1.7: 查询延迟历史（可选按 IP 过滤，最多 100 条） */
+  latencyList: (ip?: string) => Promise<IpcResponse<LatencyRecord[]>>
+  /** v1.7: 监听在线状态变化推送 */
+  onOnlineStatusChanged: (callback: (event: OnlineStatusEvent) => void) => () => void
+  /** v1.7-D: 监听直连预填参数（收到后只填表，不自动连接） */
+  onDeepLinkRequest: (callback: (req: DeepLinkRequest) => void) => () => void
 }

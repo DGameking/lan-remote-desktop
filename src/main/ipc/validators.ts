@@ -181,6 +181,54 @@ export function validateCredentialInput(value: unknown): CredentialInput {
   }
 }
 
+/* ---------- v1.7: 延迟测速 / 在线刷新 / 定时扫描入参校验 ---------- */
+
+/** 延迟测速入参：合法 IPv4 + 1..65535 整数端口。 */
+export function validateLatencyMeasure(ip: unknown, port: unknown): { ip: string; port: number } {
+  if (!isValidIp(ip)) throw new Error('目标 IP 格式不合法')
+  if (typeof port !== 'number' || !Number.isInteger(port) || port < 1 || port > 65535) {
+    throw new Error('端口必须是 1..65535 的整数')
+  }
+  return { ip, port }
+}
+
+/** 延迟历史查询的 IP：空/undefined 表示不过滤，否则必须是合法 IPv4。 */
+export function validateLatencyListIp(ip: unknown): string | undefined {
+  if (ip === undefined || ip === null || ip === '') return undefined
+  if (!isValidIp(ip)) throw new Error('IP 地址格式不合法')
+  return ip
+}
+
+/** 在线刷新设置：开关为 boolean；间隔为 15..3600 的整数秒（最小 15，默认 60）。 */
+export function validateOnlineRefreshSettings(
+  enabled: unknown,
+  intervalSec: unknown
+): Pick<Partial<AppSettings>, 'onlineRefreshEnabled' | 'onlineRefreshIntervalSec'> {
+  const patch: Pick<Partial<AppSettings>, 'onlineRefreshEnabled' | 'onlineRefreshIntervalSec'> = {}
+  if (typeof enabled === 'boolean') patch.onlineRefreshEnabled = enabled
+  if (typeof intervalSec === 'number') {
+    if (!Number.isInteger(intervalSec) || intervalSec < 15 || intervalSec > 3600) {
+      throw new Error('在线刷新间隔需在 15..3600 秒之间')
+    }
+    patch.onlineRefreshIntervalSec = intervalSec
+  }
+  return patch
+}
+
+/** 定时扫描设置：0=关闭，否则为 1..1440 的整数分钟。 */
+export function validateAutoScanSettings(
+  intervalMin: unknown
+): Pick<Partial<AppSettings>, 'autoScanIntervalMin'> {
+  const patch: Pick<Partial<AppSettings>, 'autoScanIntervalMin'> = {}
+  if (typeof intervalMin === 'number') {
+    if (!Number.isInteger(intervalMin) || intervalMin < 0 || intervalMin > 1440) {
+      throw new Error('定时扫描间隔需在 0..1440 分钟之间（0 表示关闭）')
+    }
+    patch.autoScanIntervalMin = intervalMin
+  }
+  return patch
+}
+
 export function validateSettingsPatch(value: unknown): Partial<AppSettings> {
   if (!isRecord(value)) throw new Error('设置参数格式错误')
   const patch: Partial<AppSettings> = {}
@@ -222,6 +270,12 @@ export function validateSettingsPatch(value: unknown): Partial<AppSettings> {
   if (typeof value.rdpPrinterRedirection === 'boolean') {
     patch.rdpPrinterRedirection = value.rdpPrinterRedirection
   }
+  // v1.7: 在线刷新与定时扫描（在原 v1.6 RDP 逻辑基础上追加，不覆盖既有字段）。
+  Object.assign(
+    patch,
+    validateOnlineRefreshSettings(value.onlineRefreshEnabled, value.onlineRefreshIntervalSec),
+    validateAutoScanSettings(value.autoScanIntervalMin)
+  )
   return patch
 }
 

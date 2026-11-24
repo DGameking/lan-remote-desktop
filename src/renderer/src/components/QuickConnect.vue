@@ -1,16 +1,22 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, nextTick, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import { api, unwrap } from '../api'
 import { defaultPortFor, parseTarget } from '../quick-connect'
 import {
   CAPABILITY_MATRIX,
   type ConnectRequest,
+  type DeepLinkRequest,
   type ProtocolAvailability,
   type ProtocolId
 } from '../../../shared/types'
 
-const props = defineProps<{ visible: boolean; protocols: ProtocolAvailability[] }>()
+const props = defineProps<{
+  visible: boolean
+  protocols: ProtocolAvailability[]
+  /** v1.7-D: 外部传入的直连预填参数；只填表，不自动连接 */
+  prefill?: DeepLinkRequest | null
+}>()
 const emit = defineEmits<{
   (e: 'close'): void
   (e: 'connected'): void
@@ -69,6 +75,8 @@ watch(
     // 合规勾选按已确认设置回填，已确认过的用户无需每次重勾
     void loadCompliance()
     connecting.value = false
+    // v1.7-D: 命令行 / 协议链接预填（在重置之后覆盖）
+    applyPrefill(props.prefill ?? null)
   }
 )
 
@@ -82,6 +90,34 @@ async function loadCompliance(): Promise<void> {
     agreed.value = false
   }
 }
+
+/**
+ * v1.7-D: 把外部预填参数写入表单。
+ * target 的 watch 会按端口推断协议，因此在下一 tick 用链接中显式的 protocol 覆盖推断值，
+ * 保证 --connect=IP:5900 --protocol=rdp 这类组合以显式协议为准。
+ */
+function applyPrefill(request: DeepLinkRequest | null): void {
+  if (!request) return
+  const hasPort = request.port !== undefined
+  target.value = hasPort ? `${request.ip}:${request.port}` : request.ip
+  void nextTick(() => {
+    ip.value = request.ip
+    if (request.protocol) {
+      protocol.value = request.protocol
+      port.value = request.port ?? defaultPortFor(request.protocol)
+      portManuallySet.value = hasPort
+    }
+    void prefillCredential(request.ip, protocol.value)
+  })
+}
+
+// 对话框已打开时又收到新的直连参数，也能立即回填
+watch(
+  () => props.prefill,
+  (request) => {
+    if (props.visible) applyPrefill(request ?? null)
+  }
+)
 
 // 输入变化时智能解析并回填 IP / 端口 / 协议提示；并尝试带出该 IP 已保存的账号
 watch(target, (value) => {

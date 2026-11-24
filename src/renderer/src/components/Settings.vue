@@ -19,7 +19,10 @@ const settings = ref<AppSettings>({
   rdpScreenMode: 'adaptive',
   rdpWidth: 0,
   rdpHeight: 0,
-  rdpPrinterRedirection: false
+  rdpPrinterRedirection: false,
+  onlineRefreshEnabled: false,
+  onlineRefreshIntervalSec: 60,
+  autoScanIntervalMin: 0
 })
 const vncPath = ref('')
 const rustdeskPath = ref('')
@@ -96,6 +99,23 @@ async function saveRdpPatch(patch: Partial<AppSettings>): Promise<void> {
     settings.value = await unwrap(api.settingsSet(patch))
     emit('changed')
   } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : String(error))
+  }
+}
+
+/**
+ * v1.7: 在线状态与自动扫描改动即保存。
+ * 传 rollback 是因为 :model-value 受控，写入失败需把本地值还原，否则界面与落盘不一致。
+ */
+async function saveOnlinePatch(
+  patch: Partial<AppSettings>,
+  rollback: Partial<AppSettings>
+): Promise<void> {
+  try {
+    settings.value = await unwrap(api.settingsSet(patch))
+    emit('changed')
+  } catch (error) {
+    settings.value = { ...settings.value, ...rollback }
     ElMessage.error(error instanceof Error ? error.message : String(error))
   }
 }
@@ -281,6 +301,46 @@ async function resetCompliance(): Promise<void> {
           @change="saveRdpPatch({ rdpPrinterRedirection: $event as boolean })"
         />
         <span>默认开启打印机重定向（把本机打印机映射进远程会话）</span>
+      </div>
+    </section>
+
+    <!-- v1.7: 在线状态与自动扫描 -->
+    <section class="ld-panel wide">
+      <h2>在线状态与自动扫描</h2>
+      <p class="ld-muted section-hint">
+        在线刷新会定时探测设备端口，状态变化才写盘；窗口失焦时自动降频。定时扫描会按间隔重新扫描主网段。改动即时保存。
+      </p>
+      <div class="switch-row">
+        <el-switch
+          :model-value="settings.onlineRefreshEnabled"
+          @change="saveOnlinePatch({ onlineRefreshEnabled: !!$event }, { onlineRefreshEnabled: settings.onlineRefreshEnabled })"
+        />
+        <span>开启设备在线状态定时刷新（默认关闭，避免无谓流量）</span>
+      </div>
+      <div class="field-grid">
+        <div class="field">
+          <label>在线刷新间隔（秒，15–3600）</label>
+          <el-input-number
+            :model-value="settings.onlineRefreshIntervalSec"
+            :min="15"
+            :max="3600"
+            :step="15"
+            controls-position="right"
+            style="width: 100%"
+            @change="saveOnlinePatch({ onlineRefreshIntervalSec: $event ?? 15 }, { onlineRefreshIntervalSec: settings.onlineRefreshIntervalSec })"
+          />
+        </div>
+        <div class="field">
+          <label>定时扫描间隔（分钟，0=关闭）</label>
+          <el-input-number
+            :model-value="settings.autoScanIntervalMin"
+            :min="0"
+            :max="1440"
+            controls-position="right"
+            style="width: 100%"
+            @change="saveOnlinePatch({ autoScanIntervalMin: $event ?? 0 }, { autoScanIntervalMin: settings.autoScanIntervalMin })"
+          />
+        </div>
       </div>
     </section>
 

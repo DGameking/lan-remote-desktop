@@ -2,7 +2,9 @@ import { contextBridge, ipcRenderer, type IpcRendererEvent } from 'electron'
 import { toPlain } from '../shared/ipc-sanitize'
 import {
   IPC_CHANNELS,
+  type DeepLinkRequest,
   type ElectronAPI,
+  type OnlineStatusEvent,
   type ScanProgress
 } from '../shared/types'
 
@@ -47,7 +49,25 @@ const api: ElectronAPI = {
   sessionSetNote: (sessionId, note) =>
     ipcRenderer.invoke(IPC_CHANNELS.SESSION_SET_NOTE, sessionId, note),
   dataExport: () => ipcRenderer.invoke(IPC_CHANNELS.DATA_EXPORT),
-  dataImport: (includeSettings) => ipcRenderer.invoke(IPC_CHANNELS.DATA_IMPORT, includeSettings)
+  dataImport: (includeSettings) => ipcRenderer.invoke(IPC_CHANNELS.DATA_IMPORT, includeSettings),
+  // v1.7: 延迟测速 / 历史查询。均为基本类型参数，无需过 toPlain。
+  latencyMeasure: (ip, port) => ipcRenderer.invoke(IPC_CHANNELS.LATENCY_MEASURE, ip, port),
+  latencyList: (ip) => ipcRenderer.invoke(IPC_CHANNELS.LATENCY_LIST, ip),
+  onOnlineStatusChanged: (callback) => {
+    const listener = (_event: IpcRendererEvent, event: OnlineStatusEvent): void => {
+      callback(event)
+    }
+    ipcRenderer.on(IPC_CHANNELS.ONLINE_STATUS_CHANGED, listener)
+    return () => ipcRenderer.removeListener(IPC_CHANNELS.ONLINE_STATUS_CHANGED, listener)
+  },
+  // v1.7-D: 直连预填推送。回调前过 toPlain，避免主进程传来的对象带不可克隆字段。
+  onDeepLinkRequest: (callback) => {
+    const listener = (_event: IpcRendererEvent, request: DeepLinkRequest): void => {
+      callback(toPlain(request))
+    }
+    ipcRenderer.on(IPC_CHANNELS.DEEPLINK_REQUEST, listener)
+    return () => ipcRenderer.removeListener(IPC_CHANNELS.DEEPLINK_REQUEST, listener)
+  }
 }
 
 contextBridge.exposeInMainWorld('electronAPI', api)
