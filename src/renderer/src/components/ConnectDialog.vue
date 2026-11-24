@@ -29,6 +29,9 @@ const visible = computed({
 const protocol = ref<ProtocolId>('rdp')
 const username = ref('')
 const password = ref('')
+// v1.7.1: 该设备+协议是否已有保存的凭据。只回填用户名，密码明文不进 UI，
+// 留空时由主进程从加密存储复用，避免每次重输。
+const savedCredentialForProtocol = ref(false)
 // 默认开启：输入账密即自动保存，下次点击同一设备免密直连（用户可手动关闭）
 const remember = ref(true)
 const rustdeskId = ref('')
@@ -186,11 +189,32 @@ async function loadDefaultsAndPrecheck(): Promise<void> {
     rdpWidth.value = settings.rdpWidth ?? 0
     rdpHeight.value = settings.rdpHeight ?? 0
     rdpPrinterRedirection.value = settings.rdpPrinterRedirection ?? false
+    await loadSavedCredential()
     if (props.device && protocol.value !== 'rustdesk') {
       await runPrecheck()
     }
   } catch {
     // 设置读取失败不阻断连接对话框
+  }
+}
+
+/** v1.7.1: 回填已保存凭据。用户名可回填；密码明文不进渲染层，留空由主进程复用。 */
+async function loadSavedCredential(): Promise<void> {
+  savedCredentialForProtocol.value = false
+  const device = props.device
+  if (!device || protocol.value === 'rustdesk') return
+  try {
+    const list = await unwrap(api.credentialList())
+    const saved = list.find(
+      (item) => item.deviceId === device.id && item.protocol === protocol.value && item.hasPassword
+    )
+    if (saved) {
+      // 仅当用户还没输入用户名时回填，避免覆盖用户本次的手动输入
+      if (!username.value) username.value = saved.username
+      savedCredentialForProtocol.value = true
+    }
+  } catch {
+    // 凭据列表读取失败不影响连接，退回手输
   }
 }
 
@@ -397,12 +421,15 @@ async function handleConnect(): Promise<void> {
             <el-input
               v-model="password"
               type="password"
-              placeholder="留空则在客户端中手输"
+              :placeholder="savedCredentialForProtocol ? '已保存密码，留空则自动使用' : '留空则在客户端中手输'"
               show-password
               autocomplete="new-password"
             />
           </div>
         </div>
+        <p v-if="savedCredentialForProtocol && !password" class="saved-credential-hint">
+          已保存本机加密凭据：直接点「连接」将自动使用；如需换账号，请填写新的用户名和密码。
+        </p>
       </template>
 
       <!-- 共享能力区 -->
@@ -734,5 +761,14 @@ async function handleConnect(): Promise<void> {
   font-size: 12px;
   line-height: 1.7;
   color: #526074;
+}
+.saved-credential-hint {
+  margin: 8px 0 0;
+  font-size: 12px;
+  line-height: 1.6;
+  color: #0f6e56;
+  background: #e1f5ee;
+  border-radius: 6px;
+  padding: 7px 10px;
 }
 </style>

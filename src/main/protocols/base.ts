@@ -1,4 +1,5 @@
 import { spawn, execFile } from 'node:child_process'
+import path from 'node:path'
 import { promisify } from 'node:util'
 import type { ConnectRequest, ProtocolAvailability, ProtocolId } from '../../shared/types'
 import { logger } from '../logger'
@@ -14,6 +15,8 @@ const execFileAsync = promisify(execFile)
  * SessionManager 在 await connect() 后调用 takeLastLaunchedPid() 取走本次 PID。
  */
 let lastLaunchedPid: number | undefined
+/** v1.7.1: 最近一次调起的可执行文件名（basename），用于 PID 失效时按进程名兜底判定存活。 */
+let lastLaunchedImageName: string | undefined
 
 /** 仅供测试/特殊路径显式写入；正常路径由 spawnDetached 自动记录。 */
 export function setLastLaunchedPid(pid: number): void {
@@ -25,6 +28,20 @@ export function takeLastLaunchedPid(): number | undefined {
   const pid = lastLaunchedPid
   lastLaunchedPid = undefined
   return pid
+}
+
+/** 读取并清空最近一次调起的进程名（与 PID 成对消费）。 */
+export function takeLastLaunchedImageName(): string | undefined {
+  const name = lastLaunchedImageName
+  lastLaunchedImageName = undefined
+  return name
+}
+
+/** 从可执行文件路径提取纯文件名；路径/引号异常时返回空串。 */
+export function imageNameOf(command: string): string {
+  if (typeof command !== 'string' || !command.trim()) return ''
+  const base = path.basename(command.trim().replace(/^["']|["']$/g, ''))
+  return /^[\w.\- ]+\.exe$/i.test(base) ? base : ''
 }
 
 /** 协议适配器：只负责准备参数并调起本机已安装的外部客户端，不实现任何协议栈 */
@@ -70,6 +87,7 @@ export function spawnDetached(command: string, args: string[]): Promise<{ pid: n
         logger.warn('外部进程已调起但未取得有效 PID，会话时长将标记为不可测', { command })
       }
       setLastLaunchedPid(pid)
+      lastLaunchedImageName = imageNameOf(command)
       resolve({ pid })
     })
   })

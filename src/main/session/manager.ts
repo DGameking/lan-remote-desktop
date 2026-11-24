@@ -2,12 +2,12 @@ import { randomUUID } from 'node:crypto'
 import type { ConnectRequest, ConnectResult, SessionRecord, SessionStatus } from '../../shared/types'
 import { CAPABILITY_MATRIX } from '../../shared/types'
 import { logger, scopedLogger } from '../logger'
-import { takeLastLaunchedPid } from '../protocols/base'
+import { takeLastLaunchedImageName, takeLastLaunchedPid } from '../protocols/base'
 import { getAdapter } from '../protocols/registry'
 import { decryptPassword } from '../store/crypto'
 import { getSettings, getStore, now, rowToDevice } from '../store'
 import { shouldReuseSavedCredential } from './credential-policy'
-import { isPidAlive } from './process-liveness'
+import { isPidAlive, isProcessByNameAlive } from './process-liveness'
 
 // 保持既有测试/调用方的导入路径兼容；进程检测实现已抽到 process-liveness.ts 供 rdp 清理复用。
 export { isPidAlive, taskListCsvShowsPid } from './process-liveness'
@@ -78,6 +78,8 @@ export class SessionManager {
 
   private monitorTimer: ReturnType<typeof setInterval> | null = null
   private monitorPid: number | null = null
+  /** v1.7.1: 调起的可执行文件名，PID 失效时按进程名兜底判定会话是否仍在。 */
+  private monitorImageName: string | undefined
   private monitorStartedAt = 0
   private missingStreak = 0
   private checking = false
@@ -102,19 +104,21 @@ export class SessionManager {
       this.monitorTimer = null
     }
     this.monitorPid = null
+    this.monitorImageName = undefined
     this.monitorStartedAt = 0
     this.missingStreak = 0
     this.checking = false
   }
 
   /** 调起成功后开始轮询外部进程；PID 无效时不启动（仅由用户/托盘主动结束）。 */
-  private startProcessMonitor(pid: number): void {
+  private startProcessMonitor(pid: number, imageName?: string): void {
     this.stopProcessMonitor()
     if (!Number.isInteger(pid) || pid <= 0) {
       scopedLogger('session').warn('外部进程 PID 无效，跳过自动存活检测，会话将由用户主动结束')
       return
     }
     this.monitorPid = pid
+    this.monitorImageName = imageName
     this.monitorStartedAt = Date.now()
     this.missingStreak = 0
     this.monitorTimer = setInterval(() => {
@@ -134,7 +138,17 @@ export class SessionManager {
 
     this.checking = true
     try {
-      const alive = await isPidAlive(pid)
+      let alive = await isPidAlive(pid)
+      // v1.7.1: PID 找不到时按进程名兜底。TigerVNC viewer 等 GUI 客户端在认证阶段
+      // 可能退出启动进程并派生新 PID，仅看启动 PID 会把仍在显示的窗口误判为已退出
+      // （实测会话 16 秒即被 process-exit 回收，但 viewer 认证框仍在）。
+      if (!alive && this.monitorImageName) {
+        alive = await isProcessByNameAlive(this.monitorImageName)
+        if (alive) {
+          this.missingStreak = 0
+          return
+        }
+      }
       if (alive) {
         this.missingStreak = 0
         return
@@ -302,10 +316,12 @@ export class SessionManager {
         context: { reused }
       })
 
-      // 先清空可能残留的 PID（如之前的文件传输调起），确保取到的是本次调起的进程。
+      // 先清空可能残留的 PID/进程名（如之前的文件传输调起），确保取到的是本次调起的进程。
       takeLastLaunchedPid()
+      takeLastLaunchedImageName()
       const message = await getAdapter(request.protocol).connect(resolved)
       const launchedPid = takeLastLaunchedPid()
+      const launchedImageName = takeLastLaunchedImageName()
       if (typeof launchedPid === 'number' && Number.isInteger(launchedPid) && launchedPid > 0) {
         record.externalPid = launchedPid
       }
@@ -315,7 +331,7 @@ export class SessionManager {
       getStore().updateSession(record)
       this.state = 'connected'
       this.current = record
-      this.startProcessMonitor(launchedPid ?? 0)
+      this.startProcessMonitor(launchedPid ?? 0, launchedImageName)
 
       // 调起成功后退到托盘驻留（回调由 index.ts 注入；异常不影响连接结果）
       try {

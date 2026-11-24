@@ -86,6 +86,21 @@ describe('redact - 脱敏口径', () => {
     expect(redactContext({ deviceId: 'quick-192-168-1-20' }).deviceId).toBe('192.168.1.20')
   })
 
+  it('布尔型存在性信号（hasPassword/reused 等）保留 true/false，不被脱敏成字符串', () => {
+    const out = redactContext({
+      hasPassword: true,
+      reused: false,
+      hasSavedPassword: true
+    })
+    expect(out.hasPassword).toBe(true)
+    expect(out.reused).toBe(false)
+    expect(out.hasSavedPassword).toBe(true)
+    // 字符串型敏感值仍必须脱敏，不放行
+    const strings = redactContext({ password: 'secret123', username: 'mac' })
+    expect(strings.password).toBe('[REDACTED]')
+    expect(strings.username).toBe('[REDACTED]')
+  })
+
   it('路径类 key 取 basename 且去掉 C:\\Users\\<用户名> / UNC 用户名段', () => {
     const out = redactContext({
       path: 'C:\\Users\\mukui\\AppData\\Roaming\\LanDesk\\conn.rdp',

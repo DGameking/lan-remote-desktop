@@ -17,6 +17,16 @@ export const SENSITIVE_KEYS = [
 
 const REDACTED = '[REDACTED]'
 
+/**
+ * 布尔型"存在性信号"键：这类键命中 SENSITIVE_KEYS 只是因为名字含 password/user 等子串，
+ * 但值恒为 boolean（是否提供凭据），不是凭据本身。若一并替换成 "[REDACTED]" 字符串，
+ * 日志会丢失"本次到底有没有传密码"这个诊断必需信号，且真/假都变成同一个字符串。
+ * 布尔值不可能是密码明文，保留安全。
+ */
+const BOOLEAN_SIGNAL_KEYS = [
+  'haspassword', 'hascredential', 'hassavedpassword', 'reused', 'autologin', 'skipped'
+] as const
+
 /** 路径类键：值取 basename，并去掉 C:\Users\<用户名> / UNC 用户名段（精确匹配键名） */
 const PATH_KEYS = [
   'file', 'rdpFile', 'tempFile', 'executable', 'path',
@@ -122,7 +132,12 @@ function redactKeyValue(key: string, value: unknown, seen: WeakSet<object>): unk
   const keyLower = key.toLowerCase()
 
   // 1. 敏感键（子串匹配，最高优先级，命中即 [REDACTED]）
-  if (containsSensitive(keyLower)) return REDACTED
+  // 例外：布尔型存在性信号（如 hasPassword）保留 true/false，供诊断判断凭据是否传入；
+  // 只有值确实为 boolean 时才放行，字符串/对象仍按敏感处理，杜绝任何明文泄漏。
+  if (containsSensitive(keyLower)) {
+    if (typeof value === 'boolean' && inSet(keyLower, BOOLEAN_SIGNAL_KEYS)) return value
+    return REDACTED
+  }
 
   // 2. 路径类：字符串值取 basename + 去用户名段
   if (inSet(keyLower, PATH_KEYS)) {

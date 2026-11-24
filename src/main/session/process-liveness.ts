@@ -32,6 +32,47 @@ export function taskListCsvShowsPid(stdout: string, pid: number): boolean {
 }
 
 /**
+ * 从 `tasklist /FI "IMAGENAME eq xxx" /FO CSV` 输出中判断是否至少有一个匹配进程。
+ * 抽成纯函数便于单测。tasklist 在无匹配时可能输出一行 "INFO: No tasks are running..."。
+ */
+export function taskListCsvHasAnyProcess(stdout: string): boolean {
+  if (!stdout) return false
+  for (const line of stdout.split(/\r?\n/)) {
+    if (!line.trim()) continue
+    const fields: string[] = []
+    const re = /"([^"]*)"/g
+    let match: RegExpExecArray | null
+    while ((match = re.exec(line)) !== null) fields.push(match[1])
+    if (fields.length < 2) continue
+    // "Image Name","PID" 表头，或 INFO 提示行，都不算真实进程
+    if (fields[1].trim().toUpperCase() === 'PID') continue
+    if (/^\d+$/.test(fields[1].trim())) return true
+  }
+  return false
+}
+
+/**
+ * 按进程名查询是否仍有实例存活。用于 PID 兜底：
+ * 部分 GUI 客户端（如 TigerVNC viewer）在认证阶段会重启子进程、更换 PID，
+ * 仅按启动 PID 判定会把仍在运行的会话误判为退出（见 v1.7.1 修复）。
+ * imageName 必须是纯文件名（不含路径与参数），调用方负责从 executable 提取。
+ */
+export async function isProcessByNameAlive(imageName: string): Promise<boolean> {
+  if (!imageName || !/^[\w.\- ]+\.exe$/i.test(imageName)) return false
+  if (process.platform !== 'win32') return false
+  try {
+    const { stdout } = await execFileAsync(
+      'tasklist',
+      ['/FI', `IMAGENAME eq ${imageName}`, '/FO', 'CSV'],
+      { windowsHide: true, timeout: 5000 }
+    )
+    return taskListCsvHasAnyProcess(String(stdout))
+  } catch {
+    return false
+  }
+}
+
+/**
  * 外部进程是否仍存活。Windows 用 tasklist 按 PID 精确查询；
  * 其它平台用 `kill(pid, 0)` 的 OS 存在性检查（不发送任何信号）。
  */

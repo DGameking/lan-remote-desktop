@@ -181,9 +181,16 @@ if (!gotLock) {
       Menu.setApplicationMenu(null)
       createTray()
       schedulerHandle = registerIpc(() => mainWindow, scanManager, sessionManager)
-      // 会话调起成功后隐藏主窗口，退到托盘驻留
+      // 会话调起成功后隐藏主窗口，退到托盘驻留。
+      // v1.7.1: 延迟 1.5 秒再隐藏——VNC viewer 等外部客户端的认证窗需要一点时间弹出，
+      // 立即隐藏会让用户以为什么都没发生（"点了连接没弹窗口"）。延迟期间若用户又回到
+      // 主控界面（focus），则取消隐藏，避免打断操作。
       sessionManager.setSessionLaunchedHandler(() => {
-        mainWindow?.hide()
+        const target = mainWindow
+        if (!target) return
+        setTimeout(() => {
+          if (mainWindow === target && !target.isFocused()) target.hide()
+        }, 1500)
       })
       createWindow()
       showMainWindow()
