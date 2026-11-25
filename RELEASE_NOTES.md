@@ -1,5 +1,27 @@
 # LanDesk 发布说明
 
+## v1.9.0 · 会话码外部调起版（2026-11-25）
+
+### 一句话
+
+按用户拍板的 `docs/17` **方案 2b**，纳入"会话码 / ID 连接入口"：输入对端 RustDesk 会话码，LanDesk 调起本机 **RustDesk 官方客户端**连接。会话码解析、P2P 打洞、中继全部由 RustDesk 与其服务端承担；**LanDesk 不内嵌、不捆绑、不修改任何 AGPL 代码，不建信令/中继/账号，不上传设备信息**。主体仍是纯局域网、零服务端口、零遥测主控端。实现与官方部署依据见 `docs/21`。
+
+### 新增
+
+- **会话码连接**：快速连接对话框选「RustDesk（可选）」，会话码填进「会话码 / 设备 ID」框（或目标地址框）即可调起官方客户端。会话码白名单 `^[A-Za-z0-9_-]{1,64}$`，注入字符在预填、IPC、适配器三层纵深拦截。
+- **会话码直连入口**：`LanDesk.exe --connect=<码> --protocol=rustdesk` 与 `landesk://connect?id=<码>&protocol=rustdesk`，两者都只预填、需手动确认，绝不静默连接。
+- **能力归属披露**：连接返回消息明确"会话码、P2P、中继由 RustDesk 客户端及其服务端提供（非 LanDesk 自研）"，并提供跨网自托管指引。
+- **可选自托管指引**：`README.md`「跨网与自托管 RustDesk」+ `docs/21`，含官方 Docker 安装、TCP 21115/21116/21117 + UDP 21116 端口、客户端 ID server/Key 配置与 AGPL 责任边界。
+
+### 口径修订（docs/17 §7.1 前置项）
+
+- `docs/16`、`docs/11`、`README.md` 同步：会话码从"明确不做"改为"外部调起入口已纳入、自研仍不做"；其余 C 类（自研 P2P/中继、账号 2FA、无人值守 Agent、自研 E2EE/文件/剪贴板、跨网自研、录像）仍不做。`docs/02c` 无需修改（外部调起不涉及自研被控端）。
+
+### 验证
+
+- typecheck / typecheck:vue 全绿；单测基线 440 → **467/467（34 文件；新增 `tests/v19-rustdesk-session.test.ts` 21 项 + `tests/v19-rustdesk-adapter.test.ts` 6 项独立接线验证）**；build / dist 通过。适配器独立验证真实调用 `connect()`，断言会话码作为独立 argv 参数传入、能力归属披露落地、非法会话码在 adapter 层拦截且不调起任何外部进程/URL、`rustdesk://` 回退与降级链，未发现 bug。
+- 官方核实：RustDesk 官方文档确认镜像 `rustdesk/rustdesk-server`（`hbbs` 注册/心跳/打洞 + `hbbr` 中继）、端口 TCP 21115/21116/21117 + UDP 21116、客户端 `ID server`/`Key` 配置方式；Server OSS 为 AGPL-3.0，运行未修改版本不触发 §13 源码义务。
+
 ## v1.8.0 · 显示模式与分辨率版（2026-11-24）
 
 ### 一句话

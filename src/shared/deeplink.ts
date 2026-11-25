@@ -5,6 +5,7 @@
  * 解析结果必须由用户在连接界面再次点击「发起连接」才会调起外部客户端。
  */
 
+import { normalizeRustdeskId } from './rustdesk-id'
 import type { DeepLinkRequest, ProtocolId } from './types'
 
 /** 协议白名单：只接受这三种，杜绝 javascript: / file: 等注入 */
@@ -53,6 +54,14 @@ export function inferProtocol(_ip: string, port: number): ProtocolId | undefined
 function parseTarget(text: string, explicitProtocol?: ProtocolId): DeepLinkRequest | null {
   const value = text.trim()
   if (!value) return null
+
+  // v1.9: RustDesk 会话码（字母数字串）不是 IPv4。显式指定 rustdesk 且
+  // 目标不是 IPv4 时，按会话码白名单解析；端口对会话码无意义，直接忽略。
+  if (explicitProtocol === 'rustdesk' && !isValidIpv4(value)) {
+    const sessionId = normalizeRustdeskId(value)
+    if (!sessionId) return null
+    return { ip: sessionId, protocol: 'rustdesk', rustdeskId: sessionId }
+  }
 
   let ip = value
   let port: number | undefined
@@ -149,7 +158,10 @@ export function parseDeepLinkUrl(raw: string): DeepLinkRequest | null {
   if (route.toLowerCase() !== 'connect') return null
 
   const ip = url.searchParams.get('ip')
-  if (!ip) return null
+  // v1.9: rustdesk 会话码可用 id 参数传入；ip 仍兼容（承载会话码或 IPv4）
+  const idParam = url.searchParams.get('id')
+  const target = (idParam ?? ip ?? '').trim()
+  if (!target) return null
 
   let port: number | undefined
   const portText = url.searchParams.get('port')
@@ -166,12 +178,22 @@ export function parseDeepLinkUrl(raw: string): DeepLinkRequest | null {
     protocol = parsed
   }
 
-  const normalizedIp = ip.trim()
-  if (!isValidIpv4(normalizedIp)) return null
-  protocol = protocol ?? (port !== undefined ? inferProtocol(normalizedIp, port) : undefined)
+  // v1.9: 显式 rustdesk 时目标可为会话码（借 parseTarget 的白名单分支）；
+  // 其余协议维持严格 IPv4 校验，安全边界不削弱。
+  if (protocol === 'rustdesk') {
+    const sessionTarget = parseTarget(idParam ?? target, 'rustdesk')
+    if (!sessionTarget) return null
+    return {
+      ...sessionTarget,
+      ...(port !== undefined ? { port } : {})
+    }
+  }
+
+  if (!isValidIpv4(target)) return null
+  protocol = protocol ?? (port !== undefined ? inferProtocol(target, port) : undefined)
 
   return {
-    ip: normalizedIp,
+    ip: target,
     ...(port !== undefined ? { port } : {}),
     ...(protocol !== undefined ? { protocol } : {})
   }

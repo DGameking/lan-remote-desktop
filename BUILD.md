@@ -25,7 +25,7 @@ set ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/
 | `npm run build` | 三进程构建到 `out/`（main / preload / renderer） |
 | `npm run dist` | 构建 + electron-builder 打包到 `dist/`（NSIS + portable，x64） |
 
-打包产物：`dist/LanDesk-1.8.0-setup-x64.exe`、`dist/LanDesk-1.8.0-portable-win-x64.exe`（随版本号更新）。
+打包产物：`dist/LanDesk-1.9.0-setup-x64.exe`、`dist/LanDesk-1.9.0-portable-win-x64.exe`（随版本号更新）。
 CI 中调用 `npm run dist -- --x64` 显式指定架构；本地打包请保持 windows x64。
 
 ## 4. CI / Release
@@ -47,12 +47,12 @@ CI 中调用 `npm run dist -- --x64` 显式指定架构；本地打包请保持 
 - RustDesk 为可选外部调起，依赖本机已安装官方客户端。
 - 共享剪贴板/磁盘重定向请在可信设备间开启；标准 VNC 无文件传输（用 SMB 通道）；SMB 传文件需对端开启共享并授权；跨设备常驻剪贴板同步不在范围。
 
-## 7. 验证状态（2026-11-24 v1.8.0 全量通过）
+## 7. 验证状态（2026-11-25 v1.9.0 全量通过）
 - `npm run typecheck` ✓（主进程）
 - `npm run typecheck:vue` ✓（渲染层）
-- `npm run test:unit` ✓ **440/440（32 个测试文件）**；v1.3 基线 169 → v1.4 218 → v1.5 首轮 301 → 发布前修复 321 → v1.5.1 IPC 净化 330 → v1.6 设备管理 350 → v1.7 在线感知+直连 397 → v1.7.1 连接与凭据修复 421 → v1.8 显示模式 440
+- `npm run test:unit` ✓ **467/467（34 个测试文件）**；v1.3 基线 169 → v1.4 218 → v1.5 首轮 301 → 发布前修复 321 → v1.5.1 IPC 净化 330 → v1.6 设备管理 350 → v1.7 在线感知+直连 397 → v1.7.1 连接与凭据修复 421 → v1.8 显示模式 440 → v1.9 会话码 467
 - `npm run build` ✓（main / preload / renderer 三进程）
 - `npm run dist -- --x64 --publish never` ✓（electron 45.4.1）
-- 独立审校：v1.4 全面审校发现 5 项 P0，v1.5 全部清零；发布前复核又发现并修复 3 处缺陷，见 `docs/14`、`RELEASE_NOTES`。v1.7.1 本机实测三处 P0 见 `docs/19`，v1.8 显示模式重做见 `docs/20`。
-- 产物：`dist/LanDesk-1.8.0-setup-x64.exe`、`dist/LanDesk-1.8.0-portable-win-x64.exe`、`dist/SHA256SUMS.txt`。
-- v1.8 新功能：DisplayMode 四模式（fit/native/fixed/fullscreen）RDP+VNC 通用，修复写死 1920×1080，补齐 dynamic resolution / smart sizing / VNC 显示参数；新增 `tests/display-mode.test.ts`（19 例）。
+- 独立审校：v1.4 全面审校发现 5 项 P0，v1.5 全部清零；发布前复核又发现并修复 3 处缺陷，见 `docs/14`、`RELEASE_NOTES`。v1.7.1 本机实测三处 P0 见 `docs/19`，v1.8 显示模式重做见 `docs/20`，v1.9 会话码方案 2b 见 `docs/21`。
+- 产物：`dist/LanDesk-1.9.0-setup-x64.exe`、`dist/LanDesk-1.9.0-portable-win-x64.exe`、`dist/SHA256SUMS.txt`。
+- v1.9 新功能：会话码外部调起（方案 2b）——会话码白名单 `src/shared/rustdesk-id.ts`、deeplink/CLI 会话码预填、IPC 分层校验、`RustDeskAdapter` 规范化与能力归属披露、README/docs/21 自托管指引；新增 `tests/v19-rustdesk-session.test.ts`（21 例）+ 适配器接线独立验证。

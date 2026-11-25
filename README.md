@@ -122,7 +122,7 @@ RustDesk 为可选通道，其剪贴板与文件传输由官方客户端原生�
 
 **会话备注与连接预设**：连接历史每行可写备注（≤500 字），方便记录"这台机器曾改过端口"之类的信息。设置页可设置默认显示模式、固定分辨率宽高、是否重定向打印机；连接对话框里也能对单次会话覆盖这些设置（显示模式详见下方 v1.8 章节）。
 
-> 关于"一般远控软件的功能"：画面、键鼠、全屏多屏、截图录屏、文字聊天这些由 mstsc / VNC Viewer / RustDesk 官方客户端提供；会话码、打洞中继、账号 2FA、无人值守 Agent 等需要改变产品定位，功能分层与可行性评估见 `docs/16`、`docs/17`。
+> 关于"一般远控软件的功能"：画面、键鼠、全屏多屏、截图录屏、文字聊天这些由 mstsc / VNC Viewer / RustDesk 官方客户端提供；会话码入口在 v1.9 以**外部调起 RustDesk 官方客户端**的方式纳入（见下方「跨网与自托管 RustDesk」章节）；打洞中继的自研、账号 2FA、无人值守 Agent 等仍需改变产品定位，功能分层与可行性评估见 `docs/16`、`docs/17`。
 
 ## 四·再再再再补、在线感知与运维增强（v1.7.0 新增）
 
@@ -182,6 +182,33 @@ LanDesk.exe --connect 192.168.1.20:3389 --protocol=rdp
 **VNC（TigerVNC）** 按官方手册映射：`fit` 用 `-Maximize` 最大化、`native` 不传尺寸参数、`fixed` 用 `-DesktopSize=WxH`、`fullscreen` 用 `-FullScreen`。需注意：**VNC 的远程分辨率由被控端 VNC 服务端决定，Viewer 只能"请求"切换**——固定分辨率需服务端支持 SetDesktopSize，否则维持原分辨率；非 TigerVNC（RealVNC/TightVNC）不支持这些参数，自动降级为 Viewer 默认窗口行为。
 
 详细参数映射与官方依据见 `docs/20-v1.8显示模式与分辨率实现说明.md`。
+
+---
+
+## 四·七补、跨网与自托管 RustDesk（v1.9.0 新增）
+
+LanDesk 主体仍是**纯局域网、无服务端、零遥测**主控端。v1.9 按用户拍板的方案 2b，仅增加"会话码连接"外部调起入口：**你输入对端 RustDesk 客户端显示的会话码，LanDesk 调起本机已安装的 RustDesk 官方客户端去连接**。会话码解析、P2P 打洞、中继转发全部由 RustDesk 客户端与其服务端完成，**LanDesk 不自研、不内嵌、不捆绑、不修改任何 AGPL 代码，也不建信令/中继/账号、不上传任何设备信息**。
+
+**怎么用会话码连接**
+
+1. 双方电脑各自安装 **RustDesk 官方客户端**；对端在客户端里记下自己的 ID（会话码）与临时密码。
+2. 在 LanDesk 快速连接里选「RustDesk（可选）」，把会话码填进「会话码 / 设备 ID」框（或直接填进目标地址框），勾选合规声明，点「发起连接」。
+3. 也支持命令行 `LanDesk.exe --connect=123456789 --protocol=rustdesk`，或协议链接 `landesk://connect?id=123456789&protocol=rustdesk`——两者都**只预填**，仍需你手动确认连接。会话码只接受字母、数字、下划线、连字符（1–64 位），注入字符会被拒绝。
+
+**跨网（不在同一局域网）时**
+
+局域网内 RustDesk 走官方默认服务器；若要跨网，需在双方客户端「设置 → 网络 → ID/Relay 服务器」填**同一个自托管服务器**的地址与 Key。可用官方 `rustdesk/rustdesk-server` 镜像自建（OSS 版免费、AGPL-3.0）：
+
+```bash
+# 官方安装入口（Linux 服务器）
+bash <(wget -qO- https://get.docker.com)
+wget rustdesk.com/oss.yml -O compose.yml
+sudo docker compose up -d
+```
+
+需放通 **TCP 21115 / 21116 / 21117 与 UDP 21116**（21116 必须 TCP+UDP 都开；21114 是 Pro 版 Web 控制台、21118/21119 是 Web 客户端用，OSS 不用时可关闭）。 compose 用 `hbbs`（ID 注册/心跳/TCP 打洞）与 `hbbr`（中继）两个服务，共享同一个 `rustdesk/rustdesk-server:latest` 镜像。安装结束记下服务端显示的 IP/DNS 与 Key，填进两端客户端的 `ID server` 与 `Key` 字段，其余留空。完整官方步骤与端口说明见 `docs/21-RustDesk自托管与会话码接入指引.md`。
+
+> **能力归属与责任**：跨网连接依赖你**自己**部署与维护服务器、带宽与安全；RustDesk Server OSS 为 AGPL-3.0，运行未修改版本不触发源码义务，一旦修改并对外提供网络交互即触发，LanDesk 不修改也不分发它。LanDesk 对会话码连接**只负责调起客户端**，不读取、不缓存会话内容，也不宣称自己提供会话码/P2P/中继/E2EE 能力。
 
 ---
 

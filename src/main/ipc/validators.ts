@@ -16,6 +16,7 @@ import type {
   ServerLinkTarget,
   WakeTarget
 } from '../../shared/types'
+import { normalizeRustdeskId } from '../../shared/rustdesk-id'
 import { parseManualSubnet } from '../discovery/subnet'
 import { parseMac } from '../discovery/wol'
 import { isProtocolId } from '../protocols/registry'
@@ -135,16 +136,36 @@ export function validateDevice(value: unknown): Device {
 
 export function validateConnectRequest(value: unknown) {
   if (!isRecord(value)) throw new Error('连接参数格式错误')
-  if (!isValidIp(value.ip)) throw new Error('目标 IP 格式不合法')
   if (!isProtocolId(value.protocol)) throw new Error('不支持的协议')
+  const protocol = value.protocol as ProtocolId
+  // v1.9: RustDesk 会话码是合法目标（字母数字白名单），不是 IPv4。
+  // 仅 rustdesk 协议放宽 IP 校验；其余协议仍强制严格 IPv4，安全边界不削弱。
+  let targetIp: string
+  let rustdeskId: string | undefined
+  if (protocol === 'rustdesk') {
+    rustdeskId = normalizeRustdeskId(value.rustdeskId) ?? normalizeRustdeskId(value.ip)
+    if (rustdeskId) {
+      targetIp = rustdeskId
+    } else if (isValidIp(value.ip)) {
+      // 兼容：历史上用 IP 承载 RustDesk 目标的调用方
+      targetIp = value.ip
+    } else {
+      throw new Error('RustDesk 会话码不合法（仅支持字母、数字、下划线、连字符，1-64 位）')
+    }
+  } else {
+    if (!isValidIp(value.ip)) throw new Error('目标 IP 格式不合法')
+    targetIp = value.ip
+    // 非 rustdesk 协议忽略会话码字段，避免串味
+    rustdeskId = undefined
+  }
   const request = {
     deviceId: asString(value.deviceId),
-    ip: value.ip,
-    protocol: value.protocol as ProtocolId,
+    ip: targetIp,
+    protocol,
     port: undefined as number | undefined,
     username: typeof value.username === 'string' ? value.username : undefined,
     password: typeof value.password === 'string' ? value.password : undefined,
-    rustdeskId: typeof value.rustdeskId === 'string' ? value.rustdeskId : undefined,
+    rustdeskId,
     screenMode: (value.screenMode === 'fullscreen' ? 'fullscreen' : 'window') as 'fullscreen' | 'window',
     displayMode: isDisplayMode(value.displayMode) ? value.displayMode : undefined,
     useCmdkey: value.useCmdkey === true,

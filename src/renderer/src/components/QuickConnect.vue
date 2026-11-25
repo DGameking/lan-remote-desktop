@@ -98,8 +98,9 @@ async function loadCompliance(): Promise<void> {
  */
 function applyPrefill(request: DeepLinkRequest | null): void {
   if (!request) return
-  const hasPort = request.port !== undefined
-  target.value = hasPort ? `${request.ip}:${request.port}` : request.ip
+  const isSessionCode = request.protocol === 'rustdesk' && !!request.rustdeskId
+  const hasPort = !isSessionCode && request.port !== undefined
+  target.value = isSessionCode ? request.rustdeskId! : hasPort ? `${request.ip}:${request.port}` : request.ip
   void nextTick(() => {
     ip.value = request.ip
     if (request.protocol) {
@@ -107,6 +108,8 @@ function applyPrefill(request: DeepLinkRequest | null): void {
       port.value = request.port ?? defaultPortFor(request.protocol)
       portManuallySet.value = hasPort
     }
+    // v1.9: 会话码直接带入 RustDesk 主输入框
+    if (request.rustdeskId) rustdeskId.value = request.rustdeskId
     void prefillCredential(request.ip, protocol.value)
   })
 }
@@ -162,6 +165,44 @@ function onPortChange(): void {
 }
 
 async function handleConnect(): Promise<void> {
+  const current = protocol.value
+  // v1.9: RustDesk 会话码不是 IPv4，走独立分支；会话码框优先，其次用目标框承载的会话码。
+  if (current === 'rustdesk') {
+    const code = (rustdeskId.value || target.value).trim()
+    if (!/^[A-Za-z0-9_-]{1,64}$/.test(code)) {
+      ElMessage.warning('请输入合法的 RustDesk 会话码（字母、数字、下划线、连字符，1-64 位）。')
+      return
+    }
+    if (!agreed.value) {
+      ElMessage.warning('请先勾选合规声明，确认仅连接自己有权访问的设备。')
+      return
+    }
+    connecting.value = true
+    try {
+      const request: ConnectRequest = {
+        deviceId: 'quick-rustdesk-' + code,
+        ip: code,
+        protocol: 'rustdesk',
+        rustdeskId: code,
+        clipboardSharing: false
+      }
+      const result = await unwrap(api.sessionConnect(request))
+      if (!result.ok) {
+        ElMessage.error(result.message)
+        return
+      }
+      const capText = result.capabilities?.length ? `\n${result.capabilities.join('；')}` : ''
+      ElMessage({ type: 'success', message: result.message + capText, duration: 10000 })
+      emit('connected')
+      visible.value = false
+    } catch (error) {
+      ElMessage.error(error instanceof Error ? error.message : String(error))
+    } finally {
+      connecting.value = false
+    }
+    return
+  }
+
   const parsed = parseTarget(target.value)
   if (!parsed) {
     ElMessage.warning('请输入合法的 IP 或 IP:端口，例如 192.168.1.20 或 192.168.1.20:5900。')
@@ -174,7 +215,6 @@ async function handleConnect(): Promise<void> {
 
   connecting.value = true
   try {
-    const current = protocol.value
     const request: ConnectRequest = {
       deviceId: 'quick-' + parsed.ip.replace(/\./g, '-'),
       ip: parsed.ip,
@@ -182,7 +222,6 @@ async function handleConnect(): Promise<void> {
       port: current === 'vnc' ? (port.value || 5900) : (port.value || undefined),
       username: username.value || undefined,
       password: password.value || undefined,
-      rustdeskId: rustdeskId.value || undefined,
       clipboardSharing: clipboardSharing.value,
       driveRedirection: current === 'rdp' ? driveRedirection.value : undefined
     }
@@ -192,12 +231,8 @@ async function handleConnect(): Promise<void> {
       return
     }
     // 自动保存账号密码：与快速连接的 deviceId 一致，下次输入同一 IP 即可免密直连。
-    // RustDesk 凭据由官方客户端管理，不入库；仅账号密码都填写时保存。
-    if (
-      current !== 'rustdesk' &&
-      username.value &&
-      password.value
-    ) {
+    // RustDesk 分支已在上方提前返回（凭据由官方客户端管理，不入库）。
+    if (username.value && password.value) {
       try {
         await unwrap(
           api.credentialSet({
@@ -233,17 +268,25 @@ async function handleConnect(): Promise<void> {
   >
     <div class="connect-body">
       <div class="field">
-        <label>目标地址</label>
+        <label>{{ protocol === 'rustdesk' ? '目标地址（也可直接填会话码）' : '目标地址' }}</label>
         <el-input
           v-model="target"
-          placeholder="输入 IP 或 IP:端口，例如 192.168.1.20 或 192.168.1.20:5900"
+          :placeholder="
+            protocol === 'rustdesk'
+              ? '输入 RustDesk 会话码，例如 123456789；或 IP'
+              : '输入 IP 或 IP:端口，例如 192.168.1.20 或 192.168.1.20:5900'
+          "
           clearable
           autocomplete="off"
         />
         <p class="ld-muted field-hint">
-          支持纯 IPv4 或 IP:端口；端口 3389 自动识别为 RDP，5900-5910 识别为 VNC。
+          {{
+            protocol === 'rustdesk'
+              ? '会话码由对端 RustDesk 客户端显示；跨网需双方配置同一个自托管 ID 服务器。'
+              : '支持纯 IPv4 或 IP:端口；端口 3389 自动识别为 RDP，5900-5910 识别为 VNC。'
+          }}
         </p>
-        <p v-if="ip" class="ld-muted field-hint">解析目标：{{ ip }}</p>
+        <p v-if="ip && protocol !== 'rustdesk'" class="ld-muted field-hint">解析目标：{{ ip }}</p>
       </div>
 
       <div class="field-grid">
@@ -283,8 +326,11 @@ async function handleConnect(): Promise<void> {
       </div>
 
       <div v-if="protocol === 'rustdesk'" class="field">
-        <label>RustDesk 设备 ID（留空则使用 IP）</label>
-        <el-input v-model="rustdeskId" placeholder="可选，例如 123456789" clearable />
+        <label>RustDesk 会话码 / 设备 ID</label>
+        <el-input v-model="rustdeskId" placeholder="例如 123456789（优先于上方目标地址）" clearable />
+        <p class="ld-muted field-hint">
+          会话码、P2P 与中继能力由本机 RustDesk 官方客户端提供，LanDesk 仅负责调起；凭据由 RustDesk 自己管理。
+        </p>
       </div>
 
       <template v-if="protocol !== 'rustdesk'">

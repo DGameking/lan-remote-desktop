@@ -289,6 +289,8 @@ export interface DeepLinkRequest {
   ip: string
   port?: number
   protocol?: ProtocolId
+  /** v1.9: RustDesk 会话码/设备 ID；rustdesk 协议下可与 ip 同时携带（ip 承载会话码文本） */
+  rustdeskId?: string
 }
 
 /** 连接结果 */
