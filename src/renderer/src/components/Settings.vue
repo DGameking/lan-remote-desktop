@@ -19,6 +19,7 @@ const settings = ref<AppSettings>({
   rdpScreenMode: 'adaptive',
   rdpWidth: 0,
   rdpHeight: 0,
+  displayMode: 'fit',
   rdpPrinterRedirection: false,
   onlineRefreshEnabled: false,
   onlineRefreshIntervalSec: 60,
@@ -257,44 +258,52 @@ async function resetCompliance(): Promise<void> {
     </section>
 
     <section class="ld-panel">
-      <h2>RDP 连接预设</h2>
-      <p class="ld-muted section-hint">新建 RDP 连接的默认画面参数，可在连接对话框内临时调整；改动即时保存。</p>
+      <h2>显示与连接预设</h2>
+      <p class="ld-muted section-hint">新建 RDP / VNC 连接的默认画面参数，可在连接对话框内临时调整；改动即时保存。</p>
       <div class="field">
-        <label>显示模式</label>
+        <label>显示模式（RDP / VNC 通用）</label>
         <el-select
-          :model-value="settings.rdpScreenMode"
-          placeholder="自适应"
+          :model-value="settings.displayMode"
+          placeholder="自适应当前屏幕"
           style="width: 100%"
-          @update:model-value="saveRdpPatch({ rdpScreenMode: $event as AppSettings['rdpScreenMode'] })"
+          @update:model-value="saveRdpPatch({ displayMode: $event as AppSettings['displayMode'] })"
         >
-          <el-option label="自适应（跟随会话尺寸）" value="adaptive" />
+          <el-option label="自动适应当前屏幕（推荐）" value="fit" />
+          <el-option label="以远程原生分辨率显示" value="native" />
+          <el-option label="固定分辨率（用下方宽高）" value="fixed" />
           <el-option label="全屏" value="fullscreen" />
         </el-select>
+        <p class="ld-muted preset-hint">
+          自适应：画面随本地窗口缩放；原生：保持远程分辨率、本地等比缩放；固定：会话强制为指定分辨率；全屏：连接即铺满当前屏幕。
+        </p>
       </div>
-      <div class="field-grid">
+      <div v-if="settings.displayMode === 'fixed'" class="field-grid">
         <div class="field">
-          <label>分辨率宽度（0=跟随窗口）</label>
+          <label>会话宽度（像素）</label>
           <el-input-number
             :model-value="settings.rdpWidth"
-            :min="0"
+            :min="640"
             :max="7680"
             controls-position="right"
             style="width: 100%"
-            @change="saveRdpPatch({ rdpWidth: $event ?? 0 })"
+            @change="saveRdpPatch({ rdpWidth: $event ?? 1920 })"
           />
         </div>
         <div class="field">
-          <label>分辨率高度（0=跟随窗口）</label>
+          <label>会话高度（像素）</label>
           <el-input-number
             :model-value="settings.rdpHeight"
-            :min="0"
             :max="4320"
+            :min="480"
             controls-position="right"
             style="width: 100%"
-            @change="saveRdpPatch({ rdpHeight: $event ?? 0 })"
+            @change="saveRdpPatch({ rdpHeight: $event ?? 1080 })"
           />
         </div>
       </div>
+      <p v-if="settings.displayMode === 'fixed'" class="ld-muted preset-hint">
+        VNC 的固定分辨率需被控端服务端支持 SetDesktopSize，否则维持远程原分辨率；RDP 由客户端直接指定会话分辨率。
+      </p>
       <div class="switch-row">
         <el-switch
           :model-value="settings.rdpPrinterRedirection"
@@ -439,6 +448,11 @@ h2 {
 .section-hint {
   font-size: 12px;
   margin: 0 0 16px;
+}
+.preset-hint {
+  font-size: 12px;
+  margin: 6px 0 12px;
+  line-height: 1.6;
 }
 .field {
   margin-bottom: 14px;

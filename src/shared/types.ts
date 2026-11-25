@@ -6,6 +6,15 @@
 /** 支持的外部调起协议 */
 export type ProtocolId = 'rdp' | 'vnc' | 'rustdesk'
 
+/**
+ * v1.8 统一显示模式（RDP 与 VNC 共用语义，具体参数由各适配器按官方口径映射）：
+ * - fit:        自动适应当前屏幕——远程画面跟随本地窗口缩放；RDP 用窗口+dynamic resolution，VNC 用窗口自适应
+ * - native:     以远程对象分辨率显示——保持被控端原生分辨率，本地窗口等比缩放适配（RDP smart sizing）
+ * - fixed:      固定分辨率——会话强制为指定的 width×height
+ * - fullscreen: 全屏——连接即铺满当前屏幕
+ */
+export type DisplayMode = 'fit' | 'native' | 'fixed' | 'fullscreen'
+
 /** 设备平台推测 */
 export type OsHint = 'windows' | 'macos' | 'linux' | 'fnos' | 'unknown'
 
@@ -177,12 +186,14 @@ export interface AppSettings {
   driveRedirection: boolean
   /** 常用 SMB 共享名，文件传输时作为默认子路径（留空则打开 \\IP 根目录） */
   defaultShareName: string
-  /** v1.6: RDP 默认显示模式：跟随会话自适应 / 全屏 */
-  rdpScreenMode: 'adaptive' | 'fullscreen'
-  /** v1.6: RDP 默认分辨率宽度（0=跟随本地窗口） */
+  /** v1.6 旧字段：显示模式。v1.8 起由 displayMode 统一接管，此字段保留仅为兼容老配置。 */
+  rdpScreenMode?: 'adaptive' | 'fullscreen'
+  /** v1.6: 分辨率宽度；v1.8 起仅在 fixed/native 模式下作为会话宽度（0=不指定） */
   rdpWidth: number
-  /** v1.6: RDP 默认分辨率高度（0=跟随本地窗口） */
+  /** v1.6: 分辨率高度；v1.8 起仅在 fixed/native 模式下作为会话高度（0=不指定） */
   rdpHeight: number
+  /** v1.8: 统一显示模式（RDP 与 VNC 共用）。默认 fit=自动适应当前屏幕 */
+  displayMode: DisplayMode
   /** v1.6: RDP 是否默认开启打印机重定向 */
   rdpPrinterRedirection: boolean
   /** v1.7: 是否开启设备在线状态定时刷新（默认关闭，避免无谓流量） */
@@ -252,8 +263,10 @@ export interface ConnectRequest {
   username?: string
   password?: string
   rustdeskId?: string
-  /** 显示模式：adaptive=自适应会话尺寸（3 号），fullscreen=强制全屏（2 号），window=窗口（兼容旧值） */
+  /** v1.6 旧字段：显示模式（adaptive/fullscreen/window）。v1.8 起优先用 displayMode，此字段仅在旧调用方传入时兼容 */
   screenMode?: 'adaptive' | 'fullscreen' | 'window'
+  /** v1.8: 本次会话显示模式（不传则沿用全局设置） */
+  displayMode?: DisplayMode
   useCmdkey?: boolean
   /** 本次会话是否共享剪贴板（不传则沿用全局设置） */
   clipboardSharing?: boolean
@@ -414,6 +427,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   rdpScreenMode: 'adaptive',
   rdpWidth: 0,
   rdpHeight: 0,
+  displayMode: 'fit',
   rdpPrinterRedirection: false,
   onlineRefreshEnabled: false,
   onlineRefreshIntervalSec: 60,

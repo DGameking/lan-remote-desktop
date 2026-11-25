@@ -1,5 +1,30 @@
 # LanDesk 发布说明
 
+## v1.8.0 · 显示模式与分辨率版（2026-11-24）
+
+### 一句话
+
+补齐用户要的**显示设置 / 分辨率设置 / 自动适应当前屏幕 / 以远程对象分辨率显示**：新增 RDP 与 VNC 通用的四种显示模式，并按微软 `.rdp` 属性与 TigerVNC 官方手册重做参数映射。**顺带修掉旧版一个实质 bug——无论选什么模式都被写死 1920×1080**，自适应模式形同虚设。实现依据见 `docs/20`。
+
+### 四种显示模式（RDP / VNC 通用，会话级可覆盖，默认自适应）
+
+- **自动适应当前屏幕（fit，默认）**：画面随本地窗口缩放。RDP 用窗口 + `dynamic resolution:i:1`；VNC 用 `-Maximize`。
+- **以远程原生分辨率显示（native）**：保持被控端原生分辨率、本地等比缩放。RDP 用窗口 + `smart sizing:i:1`；VNC 不传尺寸参数。
+- **固定分辨率（fixed）**：会话强制为指定宽高。RDP 写 `desktopwidth/desktopheight`；VNC 用 `-DesktopSize=WxH`。
+- **全屏（fullscreen）**：连接即铺满当前显示器。RDP 用 `screen mode id:i:2`；VNC 用 `-FullScreen -FullScreenMode=current`。
+
+### 修复的关键缺陷
+
+- **`screen mode id` 语义错误**：旧注释称"adaptive=3 号"，但官方只有 1（窗口）/2（全屏），且旧版把 adaptive 与 fullscreen 都写成 2，选"自适应"实际进全屏。现明确归一，绝不再写出非法值。
+- **分辨率被写死**：旧 `buildRdpContent()` 缺省时强写 1920×1080，官方明确不写才是"匹配本地设备"。现只有 fixed 模式才写分辨率，自适应/原生交给系统协商。
+- **缺官方自适应参数**：补齐 `dynamic resolution` 与 `smart sizing`；VNC 此前完全没有显示设置，现已按官方手册补齐。
+
+### 兼容与边界
+
+- 旧字段 `rdpScreenMode` / `screenMode` 保留兼容，新的 `displayMode` 优先；老配置升级后默认值 fit。
+- VNC 的固定分辨率依赖被控端服务端支持 `SetDesktopSize`，否则维持远程原分辨率（RFB 协议边界，非缺陷）；非 TigerVNC 保守降级为 Viewer 默认行为，不臆造参数。
+- 全量 typecheck / typecheck:vue / 单测 / build / dist 通过；测试基线 421 → **440（32 文件）**，新增 19 项显示模式测试并更新受影响的旧断言。
+
 ## v1.7.1 · 连接与凭据修复版（2026-11-24）
 
 ### 一句话

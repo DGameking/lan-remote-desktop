@@ -12,6 +12,7 @@ import type {
   OsHint,
   PrecheckResult,
   ProtocolId,
+  DisplayMode,
   ServerLinkTarget,
   WakeTarget
 } from '../../shared/types'
@@ -21,7 +22,12 @@ import { isProtocolId } from '../protocols/registry'
 
 const OS_HINTS: OsHint[] = ['windows', 'macos', 'linux', 'fnos', 'unknown']
 const SOURCES: DiscoverySource[] = ['subnet', 'mdns', 'arp', 'manual']
+const DISPLAY_MODES: DisplayMode[] = ['fit', 'native', 'fixed', 'fullscreen']
 const FORBIDDEN_PATH_CHARS = /[;&|`$<>!]/ // 杜绝 shell 元字符（虽然一律用参数数组调起）
+
+export function isDisplayMode(value: unknown): value is DisplayMode {
+  return typeof value === 'string' && (DISPLAY_MODES as string[]).includes(value)
+}
 
 export function ok<T>(data: T, message = 'success'): IpcResponse<T> {
   return { code: 0, message, data }
@@ -140,6 +146,7 @@ export function validateConnectRequest(value: unknown) {
     password: typeof value.password === 'string' ? value.password : undefined,
     rustdeskId: typeof value.rustdeskId === 'string' ? value.rustdeskId : undefined,
     screenMode: (value.screenMode === 'fullscreen' ? 'fullscreen' : 'window') as 'fullscreen' | 'window',
+    displayMode: isDisplayMode(value.displayMode) ? value.displayMode : undefined,
     useCmdkey: value.useCmdkey === true,
     clipboardSharing: typeof value.clipboardSharing === 'boolean' ? value.clipboardSharing : undefined,
     driveRedirection: typeof value.driveRedirection === 'boolean' ? value.driveRedirection : undefined,
@@ -255,6 +262,8 @@ export function validateSettingsPatch(value: unknown): Partial<AppSettings> {
   if (value.rdpScreenMode === 'adaptive' || value.rdpScreenMode === 'fullscreen') {
     patch.rdpScreenMode = value.rdpScreenMode
   }
+  // v1.8: 统一显示模式
+  if (isDisplayMode(value.displayMode)) patch.displayMode = value.displayMode
   if (typeof value.rdpWidth === 'number') {
     if (!Number.isInteger(value.rdpWidth) || value.rdpWidth < 0 || value.rdpWidth > 7680) {
       throw new Error('分辨率宽度需在 0（跟随窗口）到 7680 之间')

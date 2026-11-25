@@ -7,6 +7,7 @@ import {
   SYSTEM_PROTOCOL_MATRIX,
   getSystemProtocolCapability,
   type Device,
+  type DisplayMode,
   type PrecheckConclusion,
   type PrecheckResult,
   type ProtocolAvailability,
@@ -37,10 +38,12 @@ const remember = ref(true)
 const rustdeskId = ref('')
 const clipboardSharing = ref(true)
 const driveRedirection = ref(false)
-// v1.6: RDP 连接预设（基本类型，可直接跨 IPC 传递）
+// v1.6: 连接预设（基本类型，可直接跨 IPC 传递）
 const rdpScreenMode = ref<'adaptive' | 'fullscreen'>('adaptive')
 const rdpWidth = ref(0)
 const rdpHeight = ref(0)
+// v1.8: 统一显示模式（RDP / VNC 通用），会话级可临时覆盖
+const displayMode = ref<DisplayMode>('fit')
 const rdpPrinterRedirection = ref(false)
 const activePreset = ref<string[]>([])
 const agreed = ref(false)
@@ -186,6 +189,7 @@ async function loadDefaultsAndPrecheck(): Promise<void> {
     agreed.value = settings.complianceAccepted
     // v1.6: 从全局设置回填 RDP 预设；老数据缺字段时回退安全默认值。
     rdpScreenMode.value = settings.rdpScreenMode ?? 'adaptive'
+    displayMode.value = settings.displayMode ?? 'fit'
     rdpWidth.value = settings.rdpWidth ?? 0
     rdpHeight.value = settings.rdpHeight ?? 0
     rdpPrinterRedirection.value = settings.rdpPrinterRedirection ?? false
@@ -281,12 +285,13 @@ async function handleConnect(): Promise<void> {
         rustdeskId: rustdeskId.value || undefined,
         clipboardSharing: clipboardSharing.value,
         driveRedirection: protocol.value === 'rdp' ? driveRedirection.value : undefined,
+        // v1.8: 统一显示模式（RDP / VNC 通用），固定分辨率时带宽高
+        displayMode: displayMode.value,
+        ...(displayMode.value === 'fixed' ? { width: rdpWidth.value, height: rdpHeight.value } : {}),
         // v1.6: RDP 连接预设（仅 RDP 生效；均为基本类型，无 Proxy 克隆问题）。
         ...(protocol.value === 'rdp'
           ? {
               screenMode: rdpScreenMode.value,
-              width: rdpWidth.value,
-              height: rdpHeight.value,
               printerRedirection: rdpPrinterRedirection.value
             }
           : {}),
@@ -467,39 +472,47 @@ async function handleConnect(): Promise<void> {
         </p>
       </div>
 
-      <!-- v1.6: RDP 连接预设（仅 RDP 协议显示），默认值来自全局设置 -->
-      <el-collapse v-if="protocol === 'rdp'" v-model="activePreset" class="preset-collapse">
-        <el-collapse-item title="连接预设（显示模式 / 分辨率 / 打印机）" name="preset">
+      <!-- v1.8: 显示模式（RDP / VNC 通用），默认值来自全局设置，可会话级临时覆盖 -->
+      <el-collapse v-if="protocol === 'rdp' || protocol === 'vnc'" v-model="activePreset" class="preset-collapse">
+        <el-collapse-item title="显示设置（模式 / 分辨率）" name="preset">
           <div class="field">
             <label>显示模式</label>
-            <el-select v-model="rdpScreenMode" style="width: 100%">
-              <el-option label="自适应（跟随会话尺寸）" value="adaptive" />
+            <el-select v-model="displayMode" style="width: 100%">
+              <el-option label="自动适应当前屏幕（推荐）" value="fit" />
+              <el-option label="以远程原生分辨率显示" value="native" />
+              <el-option label="固定分辨率（用下方宽高）" value="fixed" />
               <el-option label="全屏" value="fullscreen" />
             </el-select>
+            <p class="ld-muted preset-hint">
+              自适应：画面随本地窗口缩放；原生：保持远程分辨率、本地等比缩放；固定：会话强制为指定分辨率；全屏：铺满当前屏幕。
+            </p>
           </div>
-          <div class="field-grid">
+          <div v-if="displayMode === 'fixed'" class="field-grid">
             <div class="field">
-              <label>分辨率宽度（0=跟随窗口）</label>
+              <label>会话宽度（像素）</label>
               <el-input-number
                 v-model="rdpWidth"
-                :min="0"
+                :min="640"
                 :max="7680"
                 controls-position="right"
                 style="width: 100%"
               />
             </div>
             <div class="field">
-              <label>分辨率高度（0=跟随窗口）</label>
+              <label>会话高度（像素）</label>
               <el-input-number
                 v-model="rdpHeight"
-                :min="0"
+                :min="480"
                 :max="4320"
                 controls-position="right"
                 style="width: 100%"
               />
             </div>
           </div>
-          <div class="switch-row">
+          <p v-if="displayMode === 'fixed' && protocol === 'vnc'" class="ld-muted preset-hint">
+            VNC 固定分辨率需被控端支持 SetDesktopSize，否则维持远程原分辨率。
+          </p>
+          <div v-if="protocol === 'rdp'" class="switch-row">
             <el-switch v-model="rdpPrinterRedirection" size="small" />
             <span>打印机重定向（把本机打印机映射进远程会话）</span>
           </div>
@@ -729,6 +742,11 @@ async function handleConnect(): Promise<void> {
 }
 .preset-collapse :deep(.el-collapse-item__content) {
   padding-bottom: 4px;
+}
+.preset-hint {
+  font-size: 12px;
+  margin: 6px 0 12px;
+  line-height: 1.6;
 }
 .switch-row {
   display: flex;

@@ -12,15 +12,16 @@ import type { Device, ExportData } from '../src/shared/types'
 describe('v1.6-A4 RDP 连接预设真实写进 .rdp', () => {
   const base = { ip: '192.168.1.20', clipboard: true, driveRedirection: false }
 
-  it('不传预设时维持历史默认（screen mode 2 + 1920x1080 + 打印关）', () => {
+  it('v1.6 默认（无 displayMode）：归一为 fit 自适应，窗口模式 + dynamic resolution，不写死分辨率', () => {
     const content = buildRdpContent(base)
-    expect(content).toContain('screen mode id:i:2')
-    expect(content).toContain('desktopwidth:i:1920')
-    expect(content).toContain('desktopheight:i:1080')
+    expect(content).toContain('screen mode id:i:1')
+    expect(content).toContain('dynamic resolution:i:1')
+    expect(content).not.toContain('desktopwidth:i:')
+    expect(content).not.toContain('desktopheight:i:')
     expect(content).toContain('redirectprinters:i:0')
   })
 
-  it('全屏 + 自定义分辨率 + 打印重定向写进参数', () => {
+  it('全屏 + 自定义分辨率 + 打印重定向写进参数（v1.6 旧调用方兼容）', () => {
     const content = buildRdpContent({
       ...base,
       screenMode: 'fullscreen',
@@ -39,7 +40,8 @@ describe('v1.6-A4 RDP 连接预设真实写进 .rdp', () => {
   })
 
   it('越界分辨率被忽略并回落默认值（不生成畸形 .rdp）', () => {
-    const content = buildRdpContent({ ...base, width: 99999, height: -5 })
+    // 显式 fixed 模式才写分辨率；越界回落 1920×1080
+    const content = buildRdpContent({ ...base, displayMode: 'fixed', width: 99999, height: -5 })
     expect(content).toContain('desktopwidth:i:1920')
     expect(content).toContain('desktopheight:i:1080')
   })

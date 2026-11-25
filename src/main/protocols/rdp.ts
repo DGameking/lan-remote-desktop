@@ -1,7 +1,7 @@
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import type { ConnectRequest } from '../../shared/types'
+import type { ConnectRequest, DisplayMode } from '../../shared/types'
 import { logger, scopedLogger } from '../logger'
 import { getSettings } from '../store'
 import { generateRdpPasswordHex, isRdpPasswordHex } from '../store/dpapi'
@@ -24,6 +24,26 @@ function mstscPath(): string {
  * 免密模式仅写入 DPAPI 保护、同机同用户有效的 blob hex（password 51:b:），并关闭凭据提示；
  * 无法生成合法 hex 时维持手输路径，不写任何账号密码字段。
  */
+/**
+ * v1.8: 把统一显示模式（新）或旧 screenMode（兼容）归一到 DisplayMode。
+ * 旧值语义：fullscreen→fullscreen；adaptive/window→fit（窗口自适应）。
+ */
+export function normalizeDisplayMode(
+  displayMode: DisplayMode | undefined,
+  legacyScreenMode?: 'adaptive' | 'fullscreen' | 'window'
+): DisplayMode {
+  if (
+    displayMode === 'fit' ||
+    displayMode === 'native' ||
+    displayMode === 'fixed' ||
+    displayMode === 'fullscreen'
+  ) {
+    return displayMode
+  }
+  if (legacyScreenMode === 'fullscreen') return 'fullscreen'
+  return 'fit'
+}
+
 export function buildRdpContent(options: {
   ip: string
   port?: number
@@ -32,7 +52,9 @@ export function buildRdpContent(options: {
   username?: string
   passwordHex?: string
   domain?: string
-  /** v1.6: 显示预设。不传时维持历史默认（会话自适应 2 + 1920×1080） */
+  /** v1.8: 统一显示模式，优先于旧 screenMode */
+  displayMode?: DisplayMode
+  /** v1.6 旧字段：显示模式，仅当 displayMode 未传时兼容 */
   screenMode?: 'adaptive' | 'fullscreen' | 'window'
   width?: number
   height?: number
@@ -42,8 +64,21 @@ export function buildRdpContent(options: {
   const port = options.port && options.port > 0 ? options.port : RDP_PORT
   const passwordHex = options.passwordHex
   const autoLogin = !!passwordHex && isRdpPasswordHex(passwordHex)
-  // 'adaptive' 与历史默认同为 screen mode 2（跟随会话自适应）；'window' 为 1；'fullscreen' 为 2 且固定分辨率。
-  const screenModeId = options.screenMode === 'window' ? 1 : 2
+  const mode = normalizeDisplayMode(options.displayMode, options.screenMode)
+
+  // 官方口径（learn.microsoft.com，.rdp 文件支持的属性）：
+  //   screen mode id: 1=窗口、2=全屏（只有这两个值，不存在所谓"3=自适应"）；
+  //   dynamic resolution: 1=远程会话分辨率随本地窗口缩放实时变化；
+  //   smart sizing: 1=本地把远程内容等比缩放适配窗口、不改变远程会话分辨率；
+  //   desktopwidth/height: 指定远程会话分辨率；不写才是"匹配本地设备"。
+  const screenModeId = mode === 'fullscreen' ? 2 : 1
+  const dynamicResolution = mode === 'fit' || mode === 'fullscreen' ? 1 : 0
+  const smartSizing = mode === 'native' ? 1 : 0
+
+  // fixed 模式写死分辨率；fullscreen 且旧调用方显式带宽高时也写（v1.6 兼容）。
+  // fit/native 一律不写 desktopwidth/height，交给系统按本地显示能力协商——这是修掉"写死 1920×1080"的关键。
+  // 若写了但宽高非法/为 0，回落到 1920×1080，保证参数始终合法。
+  const wantsResolution = mode === 'fixed' || (mode === 'fullscreen' && (options.width !== undefined || options.height !== undefined))
   const width =
     typeof options.width === 'number' && options.width >= 640 && options.width <= 7680
       ? Math.floor(options.width)
@@ -52,12 +87,16 @@ export function buildRdpContent(options: {
     typeof options.height === 'number' && options.height >= 480 && options.height <= 4320
       ? Math.floor(options.height)
       : 1080
+  const resolutionLines =
+    wantsResolution ? [`desktopwidth:i:${width}`, `desktopheight:i:${height}`] : []
+
   const lines: string[] = [
-    // 显示与连接优化：32 位色、局域网带宽自动检测；分辨率/全屏由 v1.6 预设决定
+    // 显示与连接优化：32 位色、局域网带宽自动检测；分辨率/全屏由 v1.8 显示模式决定
     `screen mode id:i:${screenModeId}`,
     'use multimon:i:0',
-    `desktopwidth:i:${width}`,
-    `desktopheight:i:${height}`,
+    ...resolutionLines,
+    `dynamic resolution:i:${dynamicResolution}`,
+    `smart sizing:i:${smartSizing}`,
     'session bpp:i:32',
     `full address:s:${options.ip}:${port}`,
     'compression:i:1',
@@ -126,6 +165,8 @@ export class RdpAdapter implements ProtocolAdapter {
     const settings = getSettings()
     const clipboard = request.clipboardSharing ?? settings.clipboardSharing
     const driveRedirection = request.driveRedirection ?? settings.driveRedirection
+    // v1.8: 会话级显示模式优先；未指定时沿用全局设置（默认 fit）
+    const displayMode = request.displayMode ?? settings.displayMode ?? 'fit'
 
     // request 即 SessionManager 回填保存凭据后的 resolved，password 仅存在于内存。
     // 转为 DPAPI blob hex 供 mstsc 免密；任何异常都降级为手输，不阻断连接。
@@ -150,6 +191,7 @@ export class RdpAdapter implements ProtocolAdapter {
       driveRedirection,
       username: request.username,
       passwordHex,
+      displayMode,
       screenMode: request.screenMode,
       width: request.width,
       height: request.height,

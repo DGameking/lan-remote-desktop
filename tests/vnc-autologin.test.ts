@@ -27,7 +27,8 @@ const h = vi.hoisted(() => {
       error: makeLog('error'),
       event: makeLog('event')
     },
-    state: { viewerPath: '' },
+    // displayMode 默认 native：本文件专注密码接线，显示参数由 display-mode.test.ts 单独覆盖
+    state: { viewerPath: '', displayMode: 'native' as string },
     spawnDetached: vi.fn(),
     findOnPath: vi.fn(),
     writeVncPasswordFile: vi.fn()
@@ -40,7 +41,7 @@ vi.mock('../src/main/logger', () => ({
 }))
 
 vi.mock('../src/main/store', () => ({
-  getSettings: () => ({ vncViewerPath: h.state.viewerPath })
+  getSettings: () => ({ vncViewerPath: h.state.viewerPath, displayMode: h.state.displayMode })
 }))
 
 vi.mock('../src/main/protocols/base', () => ({
@@ -97,6 +98,7 @@ function lastLaunch(): { command: string; args: string[] } {
 beforeEach(() => {
   vi.clearAllMocks()
   h.logCalls.length = 0
+  h.state.displayMode = 'native'
   tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'landesk-vnc-wiring-'))
   viewers.tiger = installViewer(path.join('TigerVNC', 'vncviewer.exe'))
   viewers.real = installViewer(path.join('RealVNC', 'VNC Viewer', 'vncviewer.exe'))
