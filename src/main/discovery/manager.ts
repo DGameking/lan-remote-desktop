@@ -1,6 +1,6 @@
 import type { ScanProgress } from '../../shared/types'
 import { logger } from '../logger'
-import { aggregateAndPersist, resetOnlineFlags, type DeviceCandidate } from './aggregator'
+import { aggregateAndPersist, applyScanOnlineState, type DeviceCandidate } from './aggregator'
 import { readArpTable, type ArpEntry } from './arp'
 import { probeFingerprints } from './fingerprint'
 import { browseMdns } from './mdns'
@@ -94,7 +94,8 @@ export class ScanManager {
     this.emit('subnet', 3, `已识别网段 ${target.cidr}，共 ${target.hosts.length} 个候选地址`)
 
     try {
-      resetOnlineFlags()
+      // v1.10: 不再在扫描开始时把所有设备标离线——中途停止/失败会留下假离线。
+      // 在线状态改为扫描真正完成后按发现结果更新（见下方 applyScanOnlineState）。
 
       // mDNS 提前发起，与端口扫描并行；末尾统一 await 汇总，避免串行等待。
       const mdnsPromise = browseMdns(2500).catch((error) => {
@@ -221,6 +222,9 @@ export class ScanManager {
       this.emit('arp', 95, `ARP 汇总完成，补充 ${arpAdded} 台设备`)
 
       const devices = aggregateAndPersist(candidates)
+      // v1.10: 扫描真正完成后才把"本轮未发现"的旧设备标离线；
+      // stopRequested 的各个提前 return 路径不会走到这里，设备在线状态保持原样。
+      applyScanOnlineState(new Set(devices.map((device) => device.ip)))
       this.emit('done', 100, `扫描完成，共发现 ${devices.length} 台设备`, devices)
       logger.info('扫描完成', { subnet: this.currentSubnet, count: devices.length })
       return { subnet: this.currentSubnet }

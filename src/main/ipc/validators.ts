@@ -486,11 +486,16 @@ export function validateExportData(payload: unknown): ExportData {
     return validateDevice(item)
   })
   if (!isRecord(payload.settings)) throw new Error('备份文件中的设置格式错误')
+  // v1.10 P0 安全修复：备份文件中的设置必须逐字段白名单校验。
+  // 此前 `as unknown as AppSettings` 会让伪造备份注入任意 mstscPath/vncViewerPath/rustdeskPath，
+  // 导入后在下次连接时被 spawn 执行（本地 RCE 面）。这里只接纳已知设置项，路径类字段
+  // 仍经 validateSettingsPatch 的 FORBIDDEN_PATH_CHARS 校验，非法值回落默认而非抛错中断导入。
+  const safeSettings = validateSettingsPatch(payload.settings) as AppSettings
   return {
     format: 'landesk-backup',
     version: 1,
     exportedAt: asString(payload.exportedAt, new Date().toISOString()),
     devices,
-    settings: payload.settings as unknown as AppSettings
+    settings: safeSettings
   }
 }

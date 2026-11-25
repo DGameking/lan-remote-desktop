@@ -158,27 +158,34 @@ onUnmounted(() => {
   <div class="ld-page">
     <header class="app-header">
       <div class="brand">
-        <div class="brand-mark">LD</div>
+        <div class="brand-mark" aria-hidden="true">
+          <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="2.5" y="4" width="19" height="13" rx="2" />
+            <path d="M8 21h8M12 17v4" />
+            <path d="M6.5 8.5l2.5 2-2.5 2M11 12.5h4" />
+          </svg>
+        </div>
         <div>
           <h1>LanDesk</h1>
           <p>一台 Windows 电脑，集中掌控局域网内所有异构设备</p>
         </div>
       </div>
       <div class="header-status">
-        <span class="ld-tag success">纯局域网 · 无服务端 · 无账号</span>
+        <span class="ld-tag success"><i class="ld-dot" aria-hidden="true" />纯局域网 · 无服务端 · 无账号</span>
         <span v-if="appStatus" class="ld-tag muted">v{{ appStatus.version }} · {{ appStatus.storeMode === 'sqlite' ? 'SQLite' : 'JSON 降级' }}</span>
       </div>
     </header>
 
     <div class="protocol-strip" v-if="appStatus">
-      <span class="strip-label">本机外部客户端：</span>
+      <span class="strip-label">本机客户端</span>
       <span
         v-for="item in appStatus.protocols"
         :key="item.id"
         class="ld-tag"
         :class="item.available ? 'success' : 'muted'"
         :title="item.detail"
-      >{{ item.label }}{{ item.available ? ' 可用' : ' 未安装' }}</span>
+      ><i class="ld-dot" aria-hidden="true" />{{ item.label }}{{ item.available ? ' 可用' : ' 未安装' }}</span>
+      <span class="strip-divider" aria-hidden="true" />
       <span class="ld-tag muted">网段 {{ appStatus.subnet }}</span>
     </div>
 
@@ -290,8 +297,9 @@ onUnmounted(() => {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 16px 28px 12px;
-  background: #fff;
+  gap: 16px;
+  padding: 15px 30px 14px;
+  background: linear-gradient(103deg, #ffffff 0%, #fbfcff 62%, #f4f7ff 100%);
   border-bottom: 1px solid var(--ld-border);
 }
 .brand {
@@ -300,25 +308,24 @@ onUnmounted(() => {
   gap: 14px;
 }
 .brand-mark {
-  width: 44px;
-  height: 44px;
-  border-radius: 12px;
-  background: linear-gradient(135deg, #2563eb, #4f8df7);
+  width: 46px;
+  height: 46px;
+  border-radius: 14px;
+  background: linear-gradient(145deg, #4a7bf7, #2755d8);
   color: #fff;
   display: flex;
   align-items: center;
   justify-content: center;
-  font-weight: 700;
-  font-size: 16px;
-  letter-spacing: 0.5px;
+  box-shadow: 0 6px 16px rgba(59, 110, 245, 0.28);
 }
 .brand h1 {
   margin: 0;
-  font-size: 20px;
-  letter-spacing: 0.3px;
+  font-size: 21px;
+  font-weight: 680;
+  letter-spacing: -0.01em;
 }
 .brand p {
-  margin: 2px 0 0;
+  margin: 1px 0 0;
   font-size: 12px;
   color: var(--ld-muted);
 }
@@ -332,15 +339,23 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: 6px;
-  padding: 10px 28px;
-  background: #f9fbff;
+  gap: 7px;
+  padding: 9px 30px;
+  background: #fbfcff;
   border-bottom: 1px solid var(--ld-border);
 }
 .strip-label {
-  font-size: 12px;
+  font-size: 11px;
+  font-weight: 600;
   color: var(--ld-muted);
-  margin-right: 4px;
+  letter-spacing: 0.04em;
+  margin-right: 2px;
+}
+.strip-divider {
+  width: 1px;
+  height: 16px;
+  background: var(--ld-border-strong);
+  margin: 0 4px;
 }
 .app-main {
   flex: 1;

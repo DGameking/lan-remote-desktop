@@ -15,6 +15,7 @@ const records = ref<SessionRecord[]>([])
 /** v1.5 P0-3: 设备索引，用于从历史记录（含 deviceId）还原 ip / 端口并发起重连 */
 const devicesById = ref<Map<string, Device>>(new Map())
 const protocolFilter = ref<'' | ProtocolId>('')
+const statusFilter = ref<'' | SessionStatus>('')
 const keyword = ref('')
 const reconnectingId = ref<string | null>(null)
 /** v1.6: 每行备注的本地草稿，blur 时提交；失败则还原为 record.note。 */
@@ -29,13 +30,13 @@ const statusLabels: Record<SessionStatus, string> = {
   idle: '空闲',
   connecting: '连接中',
   connected: '已调起',
-  failed: '失败',
+  failed: '未连上',
   ended: '已结束'
 }
 const statusClass: Record<SessionStatus, string> = {
   idle: 'muted',
-  connecting: '',
-  connected: 'success',
+  connecting: 'info',
+  connected: 'info',
   failed: 'danger',
   ended: 'muted'
 }
@@ -80,6 +81,7 @@ const filteredRecords = computed(() => {
   const kw = keyword.value.trim().toLowerCase()
   return records.value.filter((record) => {
     if (protocolFilter.value && record.protocol !== protocolFilter.value) return false
+    if (statusFilter.value && record.status !== statusFilter.value) return false
     if (!kw) return true
     return (
       (record.deviceName || '').toLowerCase().includes(kw) ||
@@ -165,65 +167,90 @@ onMounted(async () => {
 </script>
 
 <template>
-  <section class="ld-panel">
+  <section class="ld-panel history-panel">
     <div class="history-head">
-      <div>
-        <h2>连接历史</h2>
-        <p class="ld-muted">记录最近 200 次连接尝试。外部客户端一旦调起即记为“已调起”，本应用不接管远端会话的结束时刻。</p>
+      <div class="history-title">
+        <h2 class="ld-section-title">连接历史</h2>
+        <p class="ld-section-subtitle">
+          记录最近 200 次连接尝试。状态反映外部客户端的调起与退出；本工具不接管远端会话，
+          <strong>“已调起”不等于已进入远程桌面</strong>。
+        </p>
       </div>
       <div class="history-tools">
-        <el-select v-model="protocolFilter" size="small" style="width: 120px" placeholder="全部协议">
+        <el-select v-model="protocolFilter" size="small" style="width: 116px" placeholder="全部协议">
           <el-option label="全部协议" value="" />
           <el-option label="RDP" value="rdp" />
           <el-option label="VNC" value="vnc" />
           <el-option label="RustDesk" value="rustdesk" />
         </el-select>
-        <el-input v-model="keyword" size="small" placeholder="搜索设备名" clearable style="width: 180px" />
+        <el-select v-model="statusFilter" size="small" style="width: 120px" placeholder="全部状态">
+          <el-option label="全部状态" value="" />
+          <el-option label="未连上" value="failed" />
+          <el-option label="已调起" value="connected" />
+          <el-option label="已结束" value="ended" />
+        </el-select>
+        <el-input v-model="keyword" size="small" placeholder="搜索设备 / IP" clearable style="width: 168px" />
         <el-button size="small" @click="clearHistory">清空历史</el-button>
-        <span class="ld-tag muted">共 {{ filteredRecords.length }} 条</span>
+        <span class="ld-tag muted count-badge">{{ filteredRecords.length }} 条</span>
       </div>
     </div>
-    <el-table :data="filteredRecords" stripe style="width: 100%" max-height="520">
-      <el-table-column label="设备" min-width="150">
-        <template #default="scope">{{ (scope.row as SessionRecord).deviceName }}</template>
-      </el-table-column>
-      <el-table-column label="协议" width="100">
-        <template #default="scope">{{ protocolLabels[(scope.row as SessionRecord).protocol] }}</template>
-      </el-table-column>
-      <el-table-column label="状态" width="110">
+    <el-table :data="filteredRecords" stripe style="width: 100%" max-height="560" row-key="id" class="history-table">
+      <el-table-column label="设备 / 目标" min-width="150">
         <template #default="scope">
-          <span class="ld-tag" :class="statusClass[(scope.row as SessionRecord).status]">
+          <div class="device-cell">
+            <span class="device-name">{{ (scope.row as SessionRecord).deviceName }}</span>
+            <span class="device-ip ld-muted">{{ (scope.row as SessionRecord).ip || (scope.row as SessionRecord).deviceId }}</span>
+          </div>
+        </template>
+      </el-table-column>
+      <el-table-column label="协议" width="92">
+        <template #default="scope">
+          <span class="protocol-badge">{{ protocolLabels[(scope.row as SessionRecord).protocol] }}</span>
+        </template>
+      </el-table-column>
+      <el-table-column label="结果" width="106">
+        <template #default="scope">
+          <span class="ld-tag status-tag" :class="statusClass[(scope.row as SessionRecord).status]">
+            <i class="ld-dot" aria-hidden="true" />
             {{ statusLabels[(scope.row as SessionRecord).status] }}
           </span>
         </template>
       </el-table-column>
-      <el-table-column label="时长" width="90">
-        <template #default="scope">{{ durationText(scope.row as SessionRecord) }}</template>
-      </el-table-column>
-      <el-table-column label="发起时间" min-width="180">
-        <template #default="scope">{{ formatTime((scope.row as SessionRecord).startedAt) }}</template>
-      </el-table-column>
-      <el-table-column label="结束时间" min-width="180">
-        <template #default="scope">{{ formatTime((scope.row as SessionRecord).endedAt) }}</template>
-      </el-table-column>
-      <el-table-column label="错误信息" min-width="180">
+      <el-table-column label="客户端运行" width="104">
         <template #default="scope">
-          <span class="ld-muted error-text">{{ (scope.row as SessionRecord).errorMessage || '-' }}</span>
+          <span :class="(scope.row as SessionRecord).status === 'failed' ? 'duration-failed' : ''">
+            {{ durationText(scope.row as SessionRecord) }}
+          </span>
         </template>
       </el-table-column>
-      <el-table-column label="备注" min-width="180">
+      <el-table-column label="发起时间" min-width="164">
+        <template #default="scope">{{ formatTime((scope.row as SessionRecord).startedAt) }}</template>
+      </el-table-column>
+      <el-table-column label="结束时间" min-width="164">
+        <template #default="scope">{{ formatTime((scope.row as SessionRecord).endedAt) }}</template>
+      </el-table-column>
+      <el-table-column label="结果说明" min-width="230">
+        <template #default="scope">
+          <div v-if="(scope.row as SessionRecord).errorMessage" class="error-cell" :title="(scope.row as SessionRecord).errorMessage">
+            <span class="error-icon" aria-hidden="true">!</span>
+            <span class="error-text">{{ (scope.row as SessionRecord).errorMessage }}</span>
+          </div>
+          <span v-else class="ld-muted">—</span>
+        </template>
+      </el-table-column>
+      <el-table-column label="备注" min-width="140">
         <template #default="scope">
           <el-input
             v-model="noteDrafts[(scope.row as SessionRecord).id]"
             size="small"
-            placeholder="添加备注，失焦保存"
+            placeholder="添加备注"
             clearable
             maxlength="200"
             @blur="saveNote(scope.row as SessionRecord)"
           />
         </template>
       </el-table-column>
-      <el-table-column label="操作" width="110" fixed="right">
+      <el-table-column label="操作" width="100" fixed="right" align="center">
         <template #default="scope">
           <el-button
             link
@@ -231,7 +258,7 @@ onMounted(async () => {
             size="small"
             :loading="reconnectingId === (scope.row as SessionRecord).id"
             @click="reconnect(scope.row as SessionRecord)"
-          >一键重连</el-button>
+          >重连</el-button>
         </template>
       </el-table-column>
     </el-table>
@@ -243,20 +270,18 @@ onMounted(async () => {
 </template>
 
 <style scoped>
+.history-panel {
+  padding-bottom: 12px;
+}
 .history-head {
   display: flex;
   justify-content: space-between;
   align-items: flex-start;
-  gap: 16px;
-  margin-bottom: 16px;
+  gap: 20px;
+  margin-bottom: 18px;
 }
-h2 {
-  margin: 0 0 4px;
-  font-size: 18px;
-}
-.history-head p {
-  margin: 0;
-  font-size: 12px;
+.history-title {
+  max-width: 560px;
 }
 .history-tools {
   display: flex;
@@ -265,7 +290,65 @@ h2 {
   gap: 8px;
   flex-shrink: 0;
 }
+.count-badge {
+  margin-right: 0;
+}
+.device-cell {
+  display: flex;
+  flex-direction: column;
+  line-height: 1.35;
+}
+.device-name {
+  font-weight: 600;
+  color: var(--ld-text);
+}
+.device-ip {
+  font-size: 11px;
+  margin-top: 2px;
+}
+.protocol-badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 6px;
+  background: var(--ld-bg-soft);
+  color: var(--ld-text-secondary);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+.status-tag {
+  margin-right: 0;
+}
+.duration-failed {
+  color: var(--ld-danger);
+  font-weight: 600;
+}
+.error-cell {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  color: var(--ld-danger);
+}
+.error-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 15px;
+  height: 15px;
+  border-radius: 50%;
+  background: var(--ld-danger);
+  color: #fff;
+  font-size: 10px;
+  font-weight: 700;
+  flex-shrink: 0;
+  margin-top: 2px;
+}
 .error-text {
   font-size: 12px;
+  line-height: 1.45;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
 }
 </style>

@@ -19,6 +19,30 @@ const PROCESS_START_GRACE_MS = 10000
 /** 连续 N 次检测不到进程才判定退出（防 mstsc 单实例启动时的假退出） */
 const EXIT_CONFIRM_STREAK = 2
 
+/**
+ * v1.10: 本架构只调起外部客户端，**无法从协议层确认远程桌面是否真的建立**。
+ * 因此任何"外部客户端退出"触发的回收都不得写成含糊的"已结束"（会让用户误以为连上过），
+ * 一律写明"客户端已退出、未能确认进入远程桌面"，并给出按协议的可操作排查方向。
+ * 只有用户主动点"结束会话"才记为 ended。
+ *
+ * 文案刻意中性：既不谎称连上，也不断言"一定没连上"（用户可能连上后很快关窗）。
+ */
+export function describeClientExit(protocol: string, elapsedSec: number | undefined): string {
+  const dur =
+    typeof elapsedSec === 'number' && elapsedSec >= 0
+      ? `发起连接后约 ${Math.max(0, Math.round(elapsedSec))} 秒，外部客户端已退出`
+      : '外部客户端已退出'
+  const hint =
+    protocol === 'vnc'
+      ? '可能原因：VNC 认证未完成（未设独立密码、或用的是 Mac 登录账号而非独立 VNC 密码）、被控端拒绝、未输入密码即关窗。'
+      : protocol === 'rdp'
+        ? '可能原因：远程桌面认证未完成、被控端未开启远程桌面、账号无远程登录权限、或窗口被关闭。'
+        : protocol === 'rustdesk'
+          ? '可能原因：会话码/临时密码错误、对端不在线、两端未配置同一个自托管 ID 服务器、或窗口被关闭。'
+          : '可能原因：认证未完成、目标拒绝连接或窗口被关闭。'
+  return `${dur}，未能确认进入远程桌面。${hint}本工具不接管远端会话，诊断日志可提供更多线索。`
+}
+
 /** startedAt→endedAt 的整秒数；任一时间无效时返回 undefined（UI 应显示"时长不可测"）。 */
 export function computeDurationSec(startedAt: string, endedAt: string): number | undefined {
   const start = Date.parse(startedAt)
@@ -138,16 +162,35 @@ export class SessionManager {
 
     this.checking = true
     try {
+      const sessionId = this.current?.id
       let alive = await isPidAlive(pid)
+      const pidAlive = alive
       // v1.7.1: PID 找不到时按进程名兜底。TigerVNC viewer 等 GUI 客户端在认证阶段
-      // 可能退出启动进程并派生新 PID，仅看启动 PID 会把仍在显示的窗口误判为已退出
-      // （实测会话 16 秒即被 process-exit 回收，但 viewer 认证框仍在）。
+      // 可能退出启动进程并派生新 PID，仅看启动 PID 会把仍在显示的窗口误判为已退出。
+      let nameAlive = false
       if (!alive && this.monitorImageName) {
-        alive = await isProcessByNameAlive(this.monitorImageName)
+        nameAlive = await isProcessByNameAlive(this.monitorImageName)
+        alive = nameAlive
         if (alive) {
+          // v1.10: 兜底命中也记一次（节流：仅首次），让用户能从诊断包看出 viewer 派生了新 PID
+          if (this.missingStreak === 0) {
+            scopedLogger('session').info('外部进程 PID 已失效但进程名仍存活，按进程名继续跟踪', {
+              pid,
+              imageName: this.monitorImageName
+            })
+          }
           this.missingStreak = 0
           return
         }
+      }
+      // v1.10: 双判均未存活时记录明细，便于用户导出诊断包定位"进程名兜底为何没救回会话"。
+      if (!alive) {
+        scopedLogger('session').warn('外部进程 PID 与进程名双判均未存活', {
+          pid,
+          imageName: this.monitorImageName ?? null,
+          pidAlive,
+          nameAlive
+        })
       }
       if (alive) {
         this.missingStreak = 0
@@ -159,7 +202,8 @@ export class SessionManager {
         required: EXIT_CONFIRM_STREAK
       })
       if (this.missingStreak >= EXIT_CONFIRM_STREAK) {
-        this.endSession('process-exit')
+        // v1.10: 客户端退出统一记为 failed + 可读说明；防竞态：只结束本轮询所属的会话
+        this.endSession('process-exit', sessionId)
       }
     } catch (error) {
       // 检测命令异常时按"仍存活"处理，宁可不回收也不误结束用户会话
@@ -171,41 +215,54 @@ export class SessionManager {
 
   /**
    * v1.5-P0-2: 主动结束当前会话并回收状态。
-   * @param reason 'manual'（UI/托盘主动）或 'process-exit'（检测到外部客户端退出）
+   * v1.10: 任何"外部客户端退出"触发的回收都记为 failed + 中性可读说明（不谎称连上）；
+   * 仅 'manual'（用户主动结束）写 ended。
+   * @param reason 'manual'（UI/托盘主动）/'process-exit'（检测到外部客户端退出）
+   * @param expectedSessionId 可选防竞态：仅当当前会话 id 匹配才结束（避免定时器误杀新会话）
    */
-  endSession(reason: 'manual' | 'process-exit' = 'manual'): boolean {
+  endSession(reason: 'manual' | 'process-exit' = 'manual', expectedSessionId?: string): boolean {
     const log = scopedLogger('session')
     if (this.state === 'idle' || !this.current) return false
     // failed 是终态：连接失败记录必须保留 failed 供历史/诊断，不能被"结束会话"改写成 ended。
     // 调起失败时本就没有存活进程可回收，直接短路即可。
     if (this.state === 'failed') return false
+    // v1.10 防竞态：轮询回调若属于旧会话，不得误杀新会话
+    if (expectedSessionId && this.current.id !== expectedSessionId) return false
     const record = this.current
     this.stopProcessMonitor()
 
     const endedAt = now()
+    const startedMs = Date.parse(record.startedAt)
+    const endedMs = Date.parse(endedAt)
     const durationSec = computeDurationSec(record.startedAt, endedAt)
     const pid = record.externalPid
     const hasValidPid = typeof pid === 'number' && Number.isInteger(pid) && pid > 0
     // 无有效 PID 或时间不可解析时不写 0，显式标记"不可测"，避免 UI 误显示"0 秒"
     const durationUnavailable = !hasValidPid || durationSec === undefined
 
+    // v1.10: 客户端退出 ≠ 连上过。只有用户主动结束才写 ended；其余一律 failed + 说明。
+    const clientExit = reason === 'process-exit'
+    const elapsedSec =
+      Number.isFinite(startedMs) && Number.isFinite(endedMs) ? (endedMs - startedMs) / 1000 : undefined
     const ended: SessionRecord = {
       ...record,
-      status: 'ended',
+      status: clientExit ? 'failed' : 'ended',
       endedAt,
       ...(durationSec !== undefined ? { durationSec } : {}),
-      ...(durationUnavailable ? { durationUnavailable: true } : {})
+      ...(durationUnavailable ? { durationUnavailable: true } : {}),
+      ...(clientExit ? { errorMessage: describeClientExit(record.protocol, elapsedSec) } : {})
     }
     getStore().updateSession(ended)
     this.state = 'idle'
     this.current = null
 
     log.event({
-      level: 'INFO',
-      event: 'session.ended',
+      level: clientExit ? 'WARN' : 'INFO',
+      event: clientExit ? 'session.not-confirmed' : 'session.ended',
       traceId: record.id,
       context: {
         reason,
+        finalStatus: ended.status,
         protocol: record.protocol,
         hasPid: hasValidPid,
         durationSec: durationSec ?? null,

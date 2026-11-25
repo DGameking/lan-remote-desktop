@@ -1,6 +1,6 @@
 import type { Device, DiscoverySource, OsHint, ProtocolId, ServiceFingerprint } from '../../shared/types'
 import { scopedLogger } from '../logger'
-import { deviceToRow, getStore, now } from '../store'
+import { deviceToRow, getStore, now, rowToDevice } from '../store'
 import { detectOs } from './os-detect'
 
 const discoveryLog = scopedLogger('discovery')
@@ -43,14 +43,29 @@ export function inferOsHint(ports: number[], name: string, fingerprint: ServiceF
   return detectOs({ ports, name, fingerprint }).osHint
 }
 
-/** 扫描开始前把历史设备标记为离线，扫描中重新发现的会置回在线 */
-export function resetOnlineFlags(): void {
+/**
+ * v1.10 修复：扫描完成后按本轮发现结果更新在线状态。
+ * 旧实现在扫描"开始前"把所有设备标离线——一旦用户中途停止扫描或扫描失败，
+ * 所有设备就永久停在"离线"，即使实际在线。现在只在扫描真正完成汇总后调用，
+ * 且只把"本轮未发现的旧设备"标离线；发现的由 aggregateAndPersist 置在线。
+ */
+export function applyScanOnlineState(discoveredIps: Set<string>): number {
   const store = getStore()
+  const timestamp = now()
+  let offlineCount = 0
   for (const row of store.listDevices()) {
+    if (discoveredIps.has(row.ip)) continue
     if (row.online !== 0) {
-      store.upsertDevice({ ...row, online: 0, updatedAt: now() })
+      store.upsertDevice({ ...row, online: 0, updatedAt: timestamp })
+      offlineCount++
     }
   }
+  return offlineCount
+}
+
+/** 兼容旧调用的别名：传入空集合表示"本轮无设备"（仅扫描完成时使用）。 */
+export function resetOnlineFlags(): void {
+  applyScanOnlineState(new Set())
 }
 
 /**
@@ -144,6 +159,12 @@ export function aggregateAndPersist(candidates: DeviceCandidate[]): Device[] {
         ? [{ source: 'manual', osHint: old!.osHint, detail: '用户手动指定的系统类型（扫描不再覆盖）' }]
         : detected.evidence,
       osManual: manualLocked,
+      // v1.10 P0 修复：扫描重发现的候选必须继承用户元数据，
+      // 否则每次扫描都会把收藏/置顶/别名/分组清空（用户配置被静默抹掉）。
+      favorite: old?.favorite === 1,
+      pinned: old?.pinned === 1,
+      alias: old?.alias ?? '',
+      group: old?.group ?? '',
       source: candidate.source,
       availableProtocols,
       detectedPorts: [...detectedPorts],
@@ -177,19 +198,26 @@ export function aggregateAndPersist(candidates: DeviceCandidate[]): Device[] {
 export function upsertManualDevice(ip: string, name?: string): Device {
   const timestamp = now()
   const id = deviceIdForIp(ip)
-  const old = getStore().listDevices().find((row) => row.id === id)
+  const oldRow = getStore().listDevices().find((row) => row.id === id)
+  const old = oldRow ? rowToDevice(oldRow) : undefined
   const device: Device = {
     id,
-    name: name?.trim() || ip,
+    name: name?.trim() || old?.name || ip,
     ip,
     mac: old?.mac ?? '',
+    // v1.10 P0 修复：手动添加已存在设备不得抹掉识别证据与已发现端口/协议，
+    // 也不得清空用户元数据；只更新 name/online/时间戳。
     osHint: old?.osHint ?? 'unknown',
     osConfidence: old?.osConfidence ?? 'none',
-    osEvidence: [],
-    osManual: old?.osManual === 1,
-    source: 'manual',
-    availableProtocols: [],
-    detectedPorts: [],
+    osEvidence: old?.osEvidence ?? [],
+    osManual: old?.osManual === true,
+    favorite: old?.favorite === true,
+    pinned: old?.pinned === true,
+    alias: old?.alias ?? '',
+    group: old?.group ?? '',
+    source: old?.source ?? 'manual',
+    availableProtocols: old?.availableProtocols ?? [],
+    detectedPorts: old?.detectedPorts ?? [],
     online: true,
     lastSeenAt: timestamp,
     createdAt: old?.createdAt ?? timestamp,

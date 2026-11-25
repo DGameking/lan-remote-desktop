@@ -613,15 +613,12 @@ export function registerIpc(
           seenIps.add(row.ip)
           const dup = existingById.get(row.id) ?? existingByIp.get(row.ip)
           if (dup) {
-            // 本地已存在：保留用户本地的收藏/置顶/别名/分组与创建时间，仅更新扫描所得字段。
+            // v1.10 P0 修复：本地已存在的设备必须以本地行为基底，
+            // 只把备份中非空的显示名带过来。此前用 {...row} 覆盖会把本地的
+            // osHint/osEvidence/已发现端口/在线状态/延迟一并清掉——备份导入变成数据丢失。
             store.upsertDevice({
-              ...row,
-              id: dup.id,
-              favorite: dup.favorite,
-              pinned: dup.pinned,
-              alias: dup.alias,
-              group: dup.group,
-              createdAt: dup.createdAt,
+              ...dup,
+              name: row.name || dup.name,
               updatedAt: now()
             })
             updated++

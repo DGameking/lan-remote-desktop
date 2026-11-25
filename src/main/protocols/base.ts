@@ -30,6 +30,11 @@ export function takeLastLaunchedPid(): number | undefined {
   return pid
 }
 
+/** 仅供测试/特殊路径显式写入进程名；正常路径由 spawnDetached 自动记录。 */
+export function setLastLaunchedImageName(name: string | undefined): void {
+  lastLaunchedImageName = name
+}
+
 /** 读取并清空最近一次调起的进程名（与 PID 成对消费）。 */
 export function takeLastLaunchedImageName(): string | undefined {
   const name = lastLaunchedImageName
